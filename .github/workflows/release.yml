@@ -22,7 +22,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: monoid-macos
-          path: src-tauri/target/release/bundle/macos/Monoid.app
+          path: src-tauri/target/release/bundle/dmg/Monoid_0.1.0_aarch64.dmg
 
   build-windows:
     runs-on: windows-latest
@@ -65,6 +65,6 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           files: |
-            monoid-macos/Monoid.app
+            monoid-macos/Monoid_0.1.0_aarch64.dmg
             monoid-windows/Monoid_0.1.0_x64_en-US.msi
             monoid-linux/Monoid_0.1.0_amd64.AppImage

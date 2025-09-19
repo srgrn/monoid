@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="stylesheet" href="styles.css" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Tauri App</title>
+    <script type="module" src="/main.js" defer></script>
+  </head>
+
+  <body>
+     <main class="container">
+       <h1>Audio to Mono Converter</h1>
+
+        <form class="row" id="convert-form">
+          <input id="file-input" type="text" placeholder="Enter audio file path..." />
+          <button type="button" id="select-file">Select File</button>
+          <button type="submit" id="convert">Convert to Mono</button>
+          <button type="button" id="cancel-btn" style="display: none;">Cancel</button>
+        </form>
+        <div id="audio-info"></div>
+        <p id="convert-msg"></p>
+        <div id="progress-container" style="display: none;">
+          <progress id="progress-bar" max="100"></progress>
+          <p id="progress-msg"></p>
+        </div>
+     </main>
+  </body>
+</html>

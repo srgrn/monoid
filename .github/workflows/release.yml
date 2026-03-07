@@ -34,19 +34,23 @@ jobs:
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
 
-      - name: Fail if tag already exists
+      - name: Fail if GitHub release already exists
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          if git rev-parse "${{ steps.version.outputs.tag }}" >/dev/null 2>&1; then
-            echo "Tag ${{ steps.version.outputs.tag }} already exists." >&2
+          if gh release view "${{ steps.version.outputs.tag }}" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "Release ${{ steps.version.outputs.tag }} already exists." >&2
             exit 1
           fi
 
-      - name: Create and push tag
+      - name: Create or update tag
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git push --delete origin "${{ steps.version.outputs.tag }}" >/dev/null 2>&1 || true
+          git tag -d "${{ steps.version.outputs.tag }}" >/dev/null 2>&1 || true
           git tag -a "${{ steps.version.outputs.tag }}" -m "Release ${{ steps.version.outputs.tag }}" "${GITHUB_SHA}"
-          git push origin "${{ steps.version.outputs.tag }}"
+          git push --force origin "${{ steps.version.outputs.tag }}"
 
   test:
     name: Test release on Linux

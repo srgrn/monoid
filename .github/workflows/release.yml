@@ -48,9 +48,49 @@ jobs:
           git tag -a "${{ steps.version.outputs.tag }}" -m "Release ${{ steps.version.outputs.tag }}" "${GITHUB_SHA}"
           git push origin "${{ steps.version.outputs.tag }}"
 
+  test:
+    name: Test release on Linux
+    needs: prepare
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out tagged release
+        uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ needs.prepare.outputs.tag }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Run JavaScript tests
+        run: npm test
+
+      - name: Run Rust tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
   build-linux-cross:
     name: Build on Linux (${{ matrix.name }})
-    needs: prepare
+    needs:
+      - prepare
+      - test
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -100,12 +140,6 @@ jobs:
       - name: Install npm dependencies
         run: npm ci
 
-      - name: Run JavaScript tests
-        run: npm test
-
-      - name: Run Rust tests
-        run: cargo test --manifest-path src-tauri/Cargo.toml
-
       - name: Build release bundles
         env:
           AR_x86_64_pc_windows_gnu: x86_64-w64-mingw32-gcc-ar
@@ -122,7 +156,9 @@ jobs:
 
   build-macos:
     name: Build on macOS
-    needs: prepare
+    needs:
+      - prepare
+      - test
     runs-on: macos-latest
 
     steps:
@@ -143,12 +179,6 @@ jobs:
       - name: Install npm dependencies
         run: npm ci
 
-      - name: Run JavaScript tests
-        run: npm test
-
-      - name: Run Rust tests
-        run: cargo test --manifest-path src-tauri/Cargo.toml
-
       - name: Build macOS bundles
         run: npm exec tauri build
 
@@ -165,6 +195,7 @@ jobs:
     name: Publish GitHub release
     needs:
       - prepare
+      - test
       - build-linux-cross
       - build-macos
     runs-on: ubuntu-latest

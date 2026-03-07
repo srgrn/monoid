@@ -1,5 +1,7 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
+use serde::Deserialize;
 use std::io::{Read, Seek};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tauri::Emitter;
 
@@ -27,7 +29,10 @@ impl<R: Read + Seek + Send + Sync> Seek for ProgressReader<R> {
     }
 }
 
-impl<R> symphonia::core::io::MediaSource for ProgressReader<R> where R: Read + Seek + Send + Sync {
+impl<R> symphonia::core::io::MediaSource for ProgressReader<R>
+where
+    R: Read + Seek + Send + Sync,
+{
     fn is_seekable(&self) -> bool {
         true
     }
@@ -52,6 +57,104 @@ struct GetAudioInfoResponse {
     error: Option<String>,
 }
 
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ConvertRequest {
+    file_path: String,
+    output_dir: Option<String>,
+    filename_template: Option<String>,
+    overwrite_policy: Option<OverwritePolicy>,
+}
+
+#[derive(Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+enum OverwritePolicy {
+    Forbid,
+    Overwrite,
+}
+
+impl Default for OverwritePolicy {
+    fn default() -> Self {
+        Self::Forbid
+    }
+}
+
+fn render_output_filename(template: &str, input_path: &Path) -> Result<String, String> {
+    let stem = input_path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .ok_or("Input file name is missing")?;
+    let original_ext = input_path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("");
+
+    let rendered = template
+        .trim()
+        .replace("{stem}", stem)
+        .replace("{original_ext}", original_ext)
+        .replace("{ext}", "wav");
+    if rendered.is_empty() {
+        return Err("Filename template resolved to an empty value".to_string());
+    }
+
+    let filename = if rendered.to_ascii_lowercase().ends_with(".wav") {
+        rendered
+    } else {
+        format!("{rendered}.wav")
+    };
+
+    let output_path = Path::new(&filename);
+    if output_path.components().count() != 1 {
+        return Err("Filename template must not include path separators".to_string());
+    }
+
+    Ok(filename)
+}
+
+fn resolve_output_path(request: &ConvertRequest) -> Result<PathBuf, String> {
+    let input_path = Path::new(&request.file_path);
+    if request.file_path.trim().is_empty() {
+        return Err("Input file path is required".to_string());
+    }
+
+    let filename_template = request
+        .filename_template
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("{stem}_mono");
+    let filename = render_output_filename(filename_template, input_path)?;
+
+    let output_dir = request
+        .output_dir
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| input_path.parent().map(Path::to_path_buf))
+        .unwrap_or_else(|| PathBuf::from("."));
+
+    Ok(output_dir.join(filename))
+}
+
+fn ensure_output_path_allowed(output_path: &Path, policy: OverwritePolicy) -> Result<(), String> {
+    if output_path.exists() && policy != OverwritePolicy::Overwrite {
+        return Err(format!(
+            "Output file already exists: {}",
+            output_path.display()
+        ));
+    }
+
+    if let Some(parent) = output_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("Failed to prepare output directory: {error}"))?;
+    }
+
+    Ok(())
+}
+
 #[tauri::command]
 fn cancel_conversion(state: tauri::State<CancelFlag>) {
     *state.0.lock().unwrap() = true;
@@ -72,19 +175,33 @@ fn get_audio_info(file_path: String) -> GetAudioInfoResponse {
         let hint = Hint::new();
         let format_opts = FormatOptions::default();
         let metadata_opts = MetadataOptions::default();
-        let probed = symphonia::default::get_probe().format(&hint, mss, &format_opts, &metadata_opts)
+        let probed = symphonia::default::get_probe()
+            .format(&hint, mss, &format_opts, &metadata_opts)
             .map_err(|e| format!("Unsupported format: {}", e))?;
 
         let format = probed.format;
 
-        let track = format.tracks().iter().find(|t| t.codec_params.codec != symphonia::core::codecs::CODEC_TYPE_NULL)
+        let track = format
+            .tracks()
+            .iter()
+            .find(|t| t.codec_params.codec != symphonia::core::codecs::CODEC_TYPE_NULL)
             .ok_or("No supported audio tracks")?;
 
-        let channels = track.codec_params.channels.map(|c| c.count() as u32).unwrap_or(0);
-        let sample_rate = track.codec_params.sample_rate.ok_or("Unknown sample rate")?;
+        let channels = track
+            .codec_params
+            .channels
+            .map(|c| c.count() as u32)
+            .unwrap_or(0);
+        let sample_rate = track
+            .codec_params
+            .sample_rate
+            .ok_or("Unknown sample rate")?;
         let bits_per_sample = track.codec_params.bits_per_sample.unwrap_or(16);
 
-        let duration_seconds = track.codec_params.n_frames.map(|n| n as f64 / sample_rate as f64);
+        let duration_seconds = track
+            .codec_params
+            .n_frames
+            .map(|n| n as f64 / sample_rate as f64);
 
         Ok(AudioInfo {
             channels,
@@ -107,14 +224,21 @@ fn get_audio_info(file_path: String) -> GetAudioInfoResponse {
 }
 
 #[tauri::command]
-fn convert_to_mono(app: tauri::AppHandle, state: tauri::State<CancelFlag>, file_path: String) -> Result<(), String> {
+fn convert_to_mono(
+    app: tauri::AppHandle,
+    state: tauri::State<CancelFlag>,
+    request: ConvertRequest,
+) -> Result<(), String> {
     {
         let mut cancel = state.0.lock().unwrap();
         *cancel = false;
     }
     let cancel_flag = state.0.clone();
     let app_clone = app.clone();
+    let output_path = resolve_output_path(&request)?;
+    ensure_output_path_allowed(&output_path, request.overwrite_policy.unwrap_or_default())?;
     tauri::async_runtime::spawn(async move {
+        let file_path = request.file_path;
         println!("Converting file: {}", file_path);
         use std::fs::File;
         use symphonia::core::audio::{AudioBufferRef, Signal};
@@ -142,14 +266,23 @@ fn convert_to_mono(app: tauri::AppHandle, state: tauri::State<CancelFlag>, file_
             }
         };
         let bytes_read = Arc::new(Mutex::new(0u64));
-        let progress_reader = ProgressReader { inner: file, bytes_read: bytes_read.clone(), total_size };
+        let progress_reader = ProgressReader {
+            inner: file,
+            bytes_read: bytes_read.clone(),
+            total_size,
+        };
         let mss = MediaSourceStream::new(Box::new(progress_reader), Default::default());
 
         // Probe the format
         let hint = Hint::new();
         let format_opts = FormatOptions::default();
         let metadata_opts = MetadataOptions::default();
-        let probed = match symphonia::default::get_probe().format(&hint, mss, &format_opts, &metadata_opts) {
+        let probed = match symphonia::default::get_probe().format(
+            &hint,
+            mss,
+            &format_opts,
+            &metadata_opts,
+        ) {
             Ok(p) => p,
             Err(e) => {
                 println!("Unsupported format error: {:?}", e);
@@ -161,10 +294,17 @@ fn convert_to_mono(app: tauri::AppHandle, state: tauri::State<CancelFlag>, file_
         let mut format = probed.format;
 
         // Get the default track
-        let track = match format.tracks().iter().find(|t| t.codec_params.codec != symphonia::core::codecs::CODEC_TYPE_NULL) {
+        let track = match format
+            .tracks()
+            .iter()
+            .find(|t| t.codec_params.codec != symphonia::core::codecs::CODEC_TYPE_NULL)
+        {
             Some(t) => t,
             None => {
-                let _ = app_clone.emit("conversion-result", serde_json::json!({ "success": false, "error": "No supported audio tracks" }));
+                let _ = app_clone.emit(
+                    "conversion-result",
+                    serde_json::json!({ "success": false, "error": "No supported audio tracks" }),
+                );
                 return;
             }
         };
@@ -173,14 +313,19 @@ fn convert_to_mono(app: tauri::AppHandle, state: tauri::State<CancelFlag>, file_
         let sample_rate = match track.codec_params.sample_rate {
             Some(sr) => sr,
             None => {
-                let _ = app_clone.emit("conversion-result", serde_json::json!({ "success": false, "error": "Unknown sample rate" }));
+                let _ = app_clone.emit(
+                    "conversion-result",
+                    serde_json::json!({ "success": false, "error": "Unknown sample rate" }),
+                );
                 return;
             }
         };
 
         // Create a decoder
         let dec_opts = DecoderOptions::default();
-        let mut decoder = match symphonia::default::get_codecs().make(&track.codec_params, &dec_opts) {
+        let mut decoder = match symphonia::default::get_codecs()
+            .make(&track.codec_params, &dec_opts)
+        {
             Ok(d) => d,
             Err(e) => {
                 let _ = app_clone.emit("conversion-result", serde_json::json!({ "success": false, "error": format!("Unsupported codec: {}", e) }));
@@ -189,7 +334,6 @@ fn convert_to_mono(app: tauri::AppHandle, state: tauri::State<CancelFlag>, file_
         };
 
         // Prepare output WAV file with hound
-        let output_path = format!("{}_mono.wav", file_path.trim_end_matches(".wav").trim_end_matches(".mp3").trim_end_matches(".flac"));
         let spec = hound::WavSpec {
             channels: 1,
             sample_rate,
@@ -212,7 +356,10 @@ fn convert_to_mono(app: tauri::AppHandle, state: tauri::State<CancelFlag>, file_
         loop {
             if *cancel_flag.lock().unwrap() {
                 let _ = std::fs::remove_file(&output_path);
-                let _ = app_clone.emit("conversion-result", serde_json::json!({ "success": false, "error": "Conversion cancelled" }));
+                let _ = app_clone.emit(
+                    "conversion-result",
+                    serde_json::json!({ "success": false, "error": "Conversion cancelled" }),
+                );
                 return;
             }
 
@@ -254,7 +401,10 @@ fn convert_to_mono(app: tauri::AppHandle, state: tauri::State<CancelFlag>, file_
                         }
                         let mono = (sum / channels as f32 * 32767.0) as i16;
                         if let Err(_) = writer.write_sample(mono) {
-                            let _ = app_clone.emit("conversion-result", serde_json::json!({ "success": false, "error": "Write error" }));
+                            let _ = app_clone.emit(
+                                "conversion-result",
+                                serde_json::json!({ "success": false, "error": "Write error" }),
+                            );
                             return;
                         }
                     }
@@ -269,7 +419,10 @@ fn convert_to_mono(app: tauri::AppHandle, state: tauri::State<CancelFlag>, file_
                         }
                         let mono = (sum / channels as f32 * 32767.0) as i16;
                         if let Err(_) = writer.write_sample(mono) {
-                            let _ = app_clone.emit("conversion-result", serde_json::json!({ "success": false, "error": "Write error" }));
+                            let _ = app_clone.emit(
+                                "conversion-result",
+                                serde_json::json!({ "success": false, "error": "Write error" }),
+                            );
                             return;
                         }
                     }
@@ -285,7 +438,10 @@ fn convert_to_mono(app: tauri::AppHandle, state: tauri::State<CancelFlag>, file_
                         }
                         let mono = (sum / channels as f32 * 32767.0) as i16;
                         if let Err(_) = writer.write_sample(mono) {
-                            let _ = app_clone.emit("conversion-result", serde_json::json!({ "success": false, "error": "Write error" }));
+                            let _ = app_clone.emit(
+                                "conversion-result",
+                                serde_json::json!({ "success": false, "error": "Write error" }),
+                            );
                             return;
                         }
                     }
@@ -300,7 +456,10 @@ fn convert_to_mono(app: tauri::AppHandle, state: tauri::State<CancelFlag>, file_
                         }
                         let mono = (sum / channels as f32 * 32767.0) as i16;
                         if let Err(_) = writer.write_sample(mono) {
-                            let _ = app_clone.emit("conversion-result", serde_json::json!({ "success": false, "error": "Write error" }));
+                            let _ = app_clone.emit(
+                                "conversion-result",
+                                serde_json::json!({ "success": false, "error": "Write error" }),
+                            );
                             return;
                         }
                     }
@@ -315,7 +474,10 @@ fn convert_to_mono(app: tauri::AppHandle, state: tauri::State<CancelFlag>, file_
                         }
                         let mono = (sum / channels as f32) as i16;
                         if let Err(_) = writer.write_sample(mono) {
-                            let _ = app_clone.emit("conversion-result", serde_json::json!({ "success": false, "error": "Write error" }));
+                            let _ = app_clone.emit(
+                                "conversion-result",
+                                serde_json::json!({ "success": false, "error": "Write error" }),
+                            );
                             return;
                         }
                     }
@@ -331,7 +493,10 @@ fn convert_to_mono(app: tauri::AppHandle, state: tauri::State<CancelFlag>, file_
                         }
                         let mono = (sum / channels as f32) as i16;
                         if let Err(_) = writer.write_sample(mono) {
-                            let _ = app_clone.emit("conversion-result", serde_json::json!({ "success": false, "error": "Write error" }));
+                            let _ = app_clone.emit(
+                                "conversion-result",
+                                serde_json::json!({ "success": false, "error": "Write error" }),
+                            );
                             return;
                         }
                     }
@@ -346,7 +511,10 @@ fn convert_to_mono(app: tauri::AppHandle, state: tauri::State<CancelFlag>, file_
                         }
                         let mono = (sum / channels as f32 * 32767.0) as i16;
                         if let Err(_) = writer.write_sample(mono) {
-                            let _ = app_clone.emit("conversion-result", serde_json::json!({ "success": false, "error": "Write error" }));
+                            let _ = app_clone.emit(
+                                "conversion-result",
+                                serde_json::json!({ "success": false, "error": "Write error" }),
+                            );
                             return;
                         }
                     }
@@ -361,7 +529,10 @@ fn convert_to_mono(app: tauri::AppHandle, state: tauri::State<CancelFlag>, file_
                         }
                         let mono = (sum / channels as f32 * 32767.0) as i16;
                         if let Err(_) = writer.write_sample(mono) {
-                            let _ = app_clone.emit("conversion-result", serde_json::json!({ "success": false, "error": "Write error" }));
+                            let _ = app_clone.emit(
+                                "conversion-result",
+                                serde_json::json!({ "success": false, "error": "Write error" }),
+                            );
                             return;
                         }
                     }
@@ -370,13 +541,19 @@ fn convert_to_mono(app: tauri::AppHandle, state: tauri::State<CancelFlag>, file_
         }
 
         if writer.finalize().is_err() {
-            let _ = app_clone.emit("conversion-result", serde_json::json!({ "success": false, "error": "Finalize error" }));
+            let _ = app_clone.emit(
+                "conversion-result",
+                serde_json::json!({ "success": false, "error": "Finalize error" }),
+            );
             return;
         }
 
         println!("Total packets processed: {}", packet_count);
-        let _ = app_clone.emit("progress", format!("Conversion complete. Total packets: {}", packet_count));
-        let _ = app_clone.emit("conversion-result", serde_json::json!({ "success": true, "message": format!("Converted to mono: {}", output_path) }));
+        let _ = app_clone.emit(
+            "progress",
+            format!("Conversion complete. Total packets: {}", packet_count),
+        );
+        let _ = app_clone.emit("conversion-result", serde_json::json!({ "success": true, "message": format!("Converted to mono: {}", output_path.display()) }));
     });
 
     Ok(())
@@ -388,7 +565,106 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(CancelFlag(Arc::new(Mutex::new(false))))
-        .invoke_handler(tauri::generate_handler![convert_to_mono, get_audio_info, cancel_conversion])
+        .invoke_handler(tauri::generate_handler![
+            convert_to_mono,
+            get_audio_info,
+            cancel_conversion
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        ensure_output_path_allowed, render_output_filename, resolve_output_path, ConvertRequest,
+        OverwritePolicy,
+    };
+    use std::fs;
+    use std::path::Path;
+
+    fn request(file_path: &str) -> ConvertRequest {
+        ConvertRequest {
+            file_path: file_path.to_string(),
+            output_dir: None,
+            filename_template: None,
+            overwrite_policy: None,
+        }
+    }
+
+    #[test]
+    fn render_output_filename_replaces_supported_tokens() {
+        let filename = render_output_filename(
+            "{stem}-{original_ext}-mono.{ext}",
+            Path::new("/tmp/demo/song.flac"),
+        )
+        .unwrap();
+
+        assert_eq!(filename, "song-flac-mono.wav");
+    }
+
+    #[test]
+    fn resolve_output_path_defaults_to_source_directory() {
+        let output_path = resolve_output_path(&request("/tmp/demo/song.mp3")).unwrap();
+
+        assert_eq!(output_path, Path::new("/tmp/demo/song_mono.wav"));
+    }
+
+    #[test]
+    fn resolve_output_path_honors_custom_directory_and_template() {
+        let mut request = request("/tmp/demo/song.mp3");
+        request.output_dir = Some("/tmp/rendered".to_string());
+        request.filename_template = Some("{stem}_mixdown".to_string());
+
+        let output_path = resolve_output_path(&request).unwrap();
+
+        assert_eq!(output_path, Path::new("/tmp/rendered/song_mixdown.wav"));
+    }
+
+    #[test]
+    fn resolve_output_path_rejects_path_segments_in_template() {
+        let mut request = request("/tmp/demo/song.mp3");
+        request.filename_template = Some("../escape".to_string());
+
+        let error = resolve_output_path(&request).unwrap_err();
+
+        assert!(error.contains("must not include path separators"));
+    }
+
+    #[test]
+    fn ensure_output_path_allowed_rejects_existing_file_without_overwrite() {
+        let test_dir = std::env::temp_dir().join(format!(
+            "monoid-pcu-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&test_dir).unwrap();
+        let output_path = test_dir.join("existing.wav");
+        fs::write(&output_path, "occupied").unwrap();
+
+        let error = ensure_output_path_allowed(&output_path, OverwritePolicy::Forbid).unwrap_err();
+        assert!(error.contains("already exists"));
+
+        fs::remove_dir_all(test_dir).unwrap();
+    }
+
+    #[test]
+    fn ensure_output_path_allowed_creates_parent_directories() {
+        let test_dir = std::env::temp_dir().join(format!(
+            "monoid-pcu-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let output_path = test_dir.join("nested/output.wav");
+
+        ensure_output_path_allowed(&output_path, OverwritePolicy::Overwrite).unwrap();
+
+        assert!(output_path.parent().unwrap().exists());
+
+        fs::remove_dir_all(test_dir).unwrap();
+    }
 }

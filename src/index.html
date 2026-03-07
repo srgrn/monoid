@@ -9,21 +9,58 @@
   </head>
 
   <body>
-     <main class="container">
-       <h1>Audio to Mono Converter</h1>
+    <main class="container">
+      <section class="panel">
+        <h1>Audio to Mono Converter</h1>
+        <p class="subtitle">Choose where the mono WAV lands and how it should be named.</p>
 
-        <form class="row" id="convert-form">
-          <input id="file-input" type="text" placeholder="Enter audio file path..." />
-          <button type="button" id="select-file">Select File</button>
-          <button type="submit" id="convert">Convert to Mono</button>
-          <button type="button" id="cancel-btn" style="display: none;">Cancel</button>
+        <form id="convert-form">
+          <div class="field-group">
+            <label for="file-input">Source file</label>
+            <div class="inline-field">
+              <input id="file-input" type="text" placeholder="Select an audio file..." />
+              <button type="button" id="select-file">Select File</button>
+            </div>
+          </div>
+
+          <div class="field-group">
+            <label for="output-dir">Output folder</label>
+            <div class="inline-field">
+              <input id="output-dir" type="text" placeholder="Defaults to the source folder" />
+              <button type="button" id="select-output-dir">Choose Folder</button>
+            </div>
+          </div>
+
+          <div class="field-grid">
+            <div class="field-group">
+              <label for="filename-template">Filename template</label>
+              <input id="filename-template" type="text" value="{stem}_mono" />
+              <p class="hint">Use <code>{stem}</code>, <code>{original_ext}</code>, and <code>{ext}</code>.</p>
+            </div>
+
+            <div class="field-group">
+              <label for="overwrite-policy">Overwrite policy</label>
+              <select id="overwrite-policy">
+                <option value="forbid" selected>Fail if the file exists</option>
+                <option value="overwrite">Overwrite existing file</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="actions">
+            <button type="submit" id="convert">Convert to Mono</button>
+            <button type="button" id="cancel-btn" style="display: none;">Cancel</button>
+          </div>
         </form>
+
         <div id="audio-info"></div>
+        <p id="output-preview" class="hint"></p>
         <p id="convert-msg"></p>
         <div id="progress-container" style="display: none;">
           <progress id="progress-bar" max="100"></progress>
           <p id="progress-msg"></p>
         </div>
-     </main>
+      </section>
+    </main>
   </body>
 </html>

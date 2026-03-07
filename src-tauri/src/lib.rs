@@ -578,10 +578,14 @@ pub fn run() {
 mod tests {
     use super::{
         ensure_output_path_allowed, render_output_filename, resolve_output_path, ConvertRequest,
-        OverwritePolicy,
+        OverwritePolicy, ProgressReader, get_audio_info,
     };
     use std::fs;
-    use std::path::Path;
+    use std::io::{Cursor, Read};
+    use std::path::{Path, PathBuf};
+    use std::sync::{Arc, Mutex};
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use symphonia::core::io::MediaSource;
 
     fn request(file_path: &str) -> ConvertRequest {
         ConvertRequest {
@@ -590,6 +594,85 @@ mod tests {
             filename_template: None,
             overwrite_policy: None,
         }
+    }
+
+    fn temp_wav_path(name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("monoid-{name}-{nanos}.wav"))
+    }
+
+    fn write_test_wav(path: &PathBuf, channels: u16, sample_rate: u32, frames: &[i16]) {
+        let spec = hound::WavSpec {
+            channels,
+            sample_rate,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut writer = hound::WavWriter::create(path, spec).unwrap();
+        for frame in frames {
+            writer.write_sample(*frame).unwrap();
+        }
+        writer.finalize().unwrap();
+    }
+
+    #[test]
+    fn progress_reader_tracks_bytes_read() {
+        let bytes_read = Arc::new(Mutex::new(0u64));
+        let mut reader = ProgressReader {
+            inner: Cursor::new(vec![1_u8, 2, 3, 4, 5]),
+            bytes_read: bytes_read.clone(),
+            total_size: 5,
+        };
+
+        let mut buf = [0_u8; 3];
+        let read = reader.read(&mut buf).unwrap();
+
+        assert_eq!(read, 3);
+        assert_eq!(buf, [1, 2, 3]);
+        assert_eq!(*bytes_read.lock().unwrap(), 3);
+        assert_eq!(reader.byte_len(), Some(5));
+        assert!(reader.is_seekable());
+    }
+
+    #[test]
+    fn get_audio_info_reads_wav_metadata() {
+        let path = temp_wav_path("audio-info");
+        write_test_wav(
+            &path,
+            2,
+            48_000,
+            &[1000, -1000, 2000, -2000, 3000, -3000, 4000, -4000],
+        );
+
+        let response = get_audio_info(path.to_string_lossy().into_owned());
+
+        fs::remove_file(&path).unwrap();
+
+        assert!(response.success);
+        let info = response.data.expect("audio info should be present");
+        assert_eq!(info.channels, 2);
+        assert_eq!(info.sample_rate, 48_000);
+        assert_eq!(info.bits_per_sample, 16);
+        assert_eq!(info.duration_seconds, Some(4.0 / 48_000.0));
+        assert!(response.error.is_none());
+    }
+
+    #[test]
+    fn get_audio_info_reports_missing_files() {
+        let path = temp_wav_path("missing");
+
+        let response = get_audio_info(path.to_string_lossy().into_owned());
+
+        assert!(!response.success);
+        assert!(response.data.is_none());
+        assert!(response
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("Failed to open file"));
     }
 
     #[test]

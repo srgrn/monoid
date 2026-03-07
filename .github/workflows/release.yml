@@ -48,20 +48,82 @@ jobs:
           git tag -a "${{ steps.version.outputs.tag }}" -m "Release ${{ steps.version.outputs.tag }}" "${GITHUB_SHA}"
           git push origin "${{ steps.version.outputs.tag }}"
 
-  build:
-    name: Build (${{ matrix.name }})
+  build-linux-cross:
+    name: Build on Linux (${{ matrix.name }})
     needs: prepare
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         include:
           - name: linux
-            os: ubuntu-latest
+            tauri_args: ""
+            artifact_path: |
+              src-tauri/target/release/bundle/**/*.AppImage
+              src-tauri/target/release/bundle/**/*.deb
+              src-tauri/target/release/bundle/**/*.rpm
           - name: windows
-            os: windows-latest
-          - name: macos
-            os: macos-latest
+            tauri_args: "--target x86_64-pc-windows-gnu"
+            artifact_path: |
+              src-tauri/target/x86_64-pc-windows-gnu/release/bundle/**/*.msi
+              src-tauri/target/x86_64-pc-windows-gnu/release/bundle/**/*setup.exe
+
+    steps:
+      - name: Check out tagged release
+        uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ needs.prepare.outputs.tag }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-gnu
+
+      - name: Install Linux cross-build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            gcc-mingw-w64-x86-64 \
+            g++-mingw-w64-x86-64 \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            nsis \
+            patchelf
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Run JavaScript tests
+        run: npm test
+
+      - name: Run Rust tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
+      - name: Build release bundles
+        env:
+          AR_x86_64_pc_windows_gnu: x86_64-w64-mingw32-gcc-ar
+          CC_x86_64_pc_windows_gnu: x86_64-w64-mingw32-gcc
+          CXX_x86_64_pc_windows_gnu: x86_64-w64-mingw32-g++
+        run: npm exec tauri build -- ${{ matrix.tauri_args }}
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: monoid-${{ matrix.name }}
+          if-no-files-found: error
+          path: ${{ matrix.artifact_path }}
+
+  build-macos:
+    name: Build on macOS
+    needs: prepare
+    runs-on: macos-latest
 
     steps:
       - name: Check out tagged release
@@ -78,12 +140,6 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install Linux system dependencies
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
-
       - name: Install npm dependencies
         run: npm ci
 
@@ -93,28 +149,24 @@ jobs:
       - name: Run Rust tests
         run: cargo test --manifest-path src-tauri/Cargo.toml
 
-      - name: Build release bundles
+      - name: Build macOS bundles
         run: npm exec tauri build
 
-      - name: Upload release artifacts
+      - name: Upload macOS artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: monoid-${{ matrix.name }}
+          name: monoid-macos
           if-no-files-found: error
           path: |
-            src-tauri/target/release/bundle/**/*.AppImage
-            src-tauri/target/release/bundle/**/*.deb
-            src-tauri/target/release/bundle/**/*.rpm
             src-tauri/target/release/bundle/**/*.dmg
             src-tauri/target/release/bundle/**/*.app.tar.gz
-            src-tauri/target/release/bundle/**/*.msi
-            src-tauri/target/release/bundle/**/*setup.exe
 
   publish:
     name: Publish GitHub release
     needs:
       - prepare
-      - build
+      - build-linux-cross
+      - build-macos
     runs-on: ubuntu-latest
 
     steps:

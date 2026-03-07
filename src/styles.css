@@ -1,112 +1,297 @@
-.logo.vanilla:hover {
-  filter: drop-shadow(0 0 2em #ffe21c);
-}
 :root {
-  font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  color: #f5f0e8;
+  background:
+    radial-gradient(circle at top, rgba(255, 173, 96, 0.22), transparent 28%),
+    linear-gradient(180deg, #201717 0%, #130f12 100%);
   font-size: 16px;
-  line-height: 24px;
+  line-height: 1.5;
   font-weight: 400;
-
-  color: #0f0f0f;
-  background-color: #f6f6f6;
-
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  -webkit-text-size-adjust: 100%;
 }
 
-.container {
+* {
+  box-sizing: border-box;
+}
+
+body {
   margin: 0;
-  padding-top: 10vh;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  text-align: center;
+  min-height: 100vh;
 }
 
-.logo {
-  height: 6em;
-  padding: 1.5em;
-  will-change: filter;
-  transition: 0.75s;
-}
-
-.logo.tauri:hover {
-  filter: drop-shadow(0 0 2em #24c8db);
-}
-
-.row {
-  display: flex;
-  justify-content: center;
-}
-
-a {
-  font-weight: 500;
-  color: #646cff;
-  text-decoration: inherit;
-}
-
-a:hover {
-  color: #535bf2;
-}
-
-h1 {
-  text-align: center;
-}
-
-input,
-button {
-  border-radius: 8px;
-  border: 1px solid transparent;
-  padding: 0.6em 1.2em;
-  font-size: 1em;
-  font-weight: 500;
-  font-family: inherit;
-  color: #0f0f0f;
-  background-color: #ffffff;
-  transition: border-color 0.25s;
-  box-shadow: 0 2px 2px rgba(0, 0, 0, 0.2);
+button,
+input {
+  font: inherit;
 }
 
 button {
+  border: 0;
+  border-radius: 999px;
+  padding: 0.8rem 1.2rem;
+  background: #f08f55;
+  color: #201717;
   cursor: pointer;
+  transition: transform 140ms ease, opacity 140ms ease, background 140ms ease;
 }
 
-button:hover {
-  border-color: #396cd8;
-}
-button:active {
-  border-color: #396cd8;
-  background-color: #e8e8e8;
+button:hover:not(:disabled) {
+  transform: translateY(-1px);
+  background: #ffad60;
 }
 
-input,
-button {
-  outline: none;
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
 }
 
-#greet-input {
-  margin-right: 5px;
+.shell {
+  width: min(1120px, calc(100vw - 2rem));
+  margin: 0 auto;
+  padding: 3rem 0 4rem;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    color: #f6f6f6;
-    background-color: #2f2f2f;
+.hero {
+  margin-bottom: 1.5rem;
+}
+
+.eyebrow {
+  margin: 0 0 0.5rem;
+  text-transform: uppercase;
+  letter-spacing: 0.2em;
+  color: #ffad60;
+  font-size: 0.8rem;
+}
+
+.hero h1 {
+  margin: 0;
+  max-width: 12ch;
+  font-size: clamp(2.4rem, 6vw, 4.75rem);
+  line-height: 0.95;
+}
+
+.lede {
+  max-width: 60ch;
+  color: #d7cac4;
+}
+
+.panel {
+  background: rgba(42, 30, 34, 0.78);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 24px;
+  box-shadow: 0 30px 60px rgba(0, 0, 0, 0.24);
+  backdrop-filter: blur(18px);
+}
+
+.controls {
+  display: grid;
+  gap: 1rem;
+  padding: 1.25rem;
+  margin-bottom: 1.25rem;
+}
+
+.actions,
+.toggles,
+.runbar {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.toggles label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  color: #e7dbd6;
+}
+
+.runbar {
+  justify-content: space-between;
+}
+
+#cancel-batch {
+  background: rgba(255, 255, 255, 0.12);
+  color: #f5f0e8;
+}
+
+#batch-status {
+  margin: 0;
+  color: #d7cac4;
+}
+
+#batch-status[data-tone="success"] {
+  color: #86efac;
+}
+
+#batch-status[data-tone="warning"] {
+  color: #fcd34d;
+}
+
+#batch-status[data-tone="error"] {
+  color: #fca5a5;
+}
+
+.dashboard {
+  display: grid;
+  gap: 1.25rem;
+  grid-template-columns: minmax(280px, 340px) minmax(0, 1fr);
+}
+
+.summary,
+.queue-panel {
+  padding: 1.25rem;
+}
+
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.9rem;
+  margin-bottom: 1rem;
+}
+
+.metric {
+  padding: 1rem;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.metric span {
+  display: block;
+  color: #bcaea8;
+  font-size: 0.85rem;
+}
+
+.metric strong {
+  display: block;
+  font-size: 2rem;
+}
+
+.progress-block {
+  padding: 1rem;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.progress-labels,
+.queue-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: baseline;
+}
+
+progress {
+  width: 100%;
+  height: 0.8rem;
+  margin: 0.75rem 0;
+  accent-color: #ffad60;
+}
+
+#batch-detail,
+#batch-stats,
+#queue-caption {
+  color: #cdbfba;
+}
+
+.queue-list {
+  list-style: none;
+  margin: 1rem 0 0;
+  padding: 0;
+  display: grid;
+  gap: 0.75rem;
+  max-height: 60vh;
+  overflow: auto;
+}
+
+.queue-item,
+.queue-empty {
+  padding: 0.9rem 1rem;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.queue-item {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: flex-start;
+}
+
+.queue-item strong,
+.queue-item p,
+.queue-meta {
+  margin: 0;
+}
+
+.queue-item p {
+  color: #bcaea8;
+  word-break: break-all;
+}
+
+.queue-meta {
+  display: grid;
+  gap: 0.35rem;
+  justify-items: end;
+  text-align: right;
+  color: #d7cac4;
+  min-width: 12rem;
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.2rem 0.65rem;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+  text-transform: capitalize;
+  font-size: 0.8rem;
+}
+
+.queue-item[data-status="done"] .pill {
+  background: rgba(74, 222, 128, 0.18);
+  color: #86efac;
+}
+
+.queue-item[data-status="failed"] .pill {
+  background: rgba(248, 113, 113, 0.18);
+  color: #fca5a5;
+}
+
+.queue-item[data-status="processing"] .pill {
+  background: rgba(251, 191, 36, 0.18);
+  color: #fcd34d;
+}
+
+.queue-item[data-status="skipped"] .pill,
+.queue-item[data-status="cancelled"] .pill {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+@media (max-width: 860px) {
+  .shell {
+    width: min(100vw - 1rem, 100%);
+    padding-top: 1.5rem;
   }
 
-  a:hover {
-    color: #24c8db;
+  .dashboard {
+    grid-template-columns: 1fr;
   }
 
-  input,
-  button {
-    color: #ffffff;
-    background-color: #0f0f0f98;
+  .queue-item {
+    flex-direction: column;
   }
-  button:active {
-    background-color: #0f0f0f69;
+
+  .queue-meta {
+    min-width: 0;
+    justify-items: start;
+    text-align: left;
+  }
+
+  .runbar {
+    justify-content: flex-start;
   }
 }

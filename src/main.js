@@ -2,6 +2,8 @@ import { mergeQueue, summarizeQueue } from "./queue.js";
 
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
+const appWindow = window.__TAURI__.window?.getCurrentWindow?.();
+const LogicalSize = window.__TAURI__.dpi?.LogicalSize;
 
 let queue = [];
 let running = false;
@@ -23,6 +25,49 @@ let progressState = {
 
 function byId(id) {
   return document.getElementById(id);
+}
+
+function waitForNextFrame() {
+  return new Promise((resolve) => {
+    requestAnimationFrame(() => resolve());
+  });
+}
+
+async function autofitWindowToContent() {
+  if (!appWindow || !LogicalSize) {
+    return;
+  }
+
+  await waitForNextFrame();
+  await waitForNextFrame();
+
+  const shell = document.querySelector(".shell");
+  if (!shell) {
+    return;
+  }
+
+  const shellStyles = window.getComputedStyle(shell);
+  const bodyStyles = window.getComputedStyle(document.body);
+  const horizontalPadding =
+    parseFloat(shellStyles.marginLeft || "0") +
+    parseFloat(shellStyles.marginRight || "0") +
+    parseFloat(bodyStyles.paddingLeft || "0") +
+    parseFloat(bodyStyles.paddingRight || "0");
+  const verticalPadding =
+    parseFloat(shellStyles.paddingTop || "0") +
+    parseFloat(shellStyles.paddingBottom || "0") +
+    parseFloat(bodyStyles.paddingTop || "0") +
+    parseFloat(bodyStyles.paddingBottom || "0");
+
+  const targetWidth = Math.max(1100, Math.ceil(shell.scrollWidth + horizontalPadding + 48));
+  const targetHeight = Math.max(820, Math.ceil(shell.scrollHeight + verticalPadding + 72));
+
+  try {
+    await appWindow.setSize(new LogicalSize(targetWidth, targetHeight));
+    await appWindow.center();
+  } catch (error) {
+    console.warn("Unable to autofit Monoid window", error);
+  }
 }
 
 function setStatus(message, tone = "neutral") {
@@ -215,6 +260,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   filenameTemplateInput = byId("filename-template");
   overwritePolicyInput = byId("overwrite-policy");
   renderQueue();
+  await autofitWindowToContent();
 
   await Promise.all([
     listen("batch-item", (event) => {

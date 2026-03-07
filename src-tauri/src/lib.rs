@@ -3,6 +3,9 @@ use serde::Deserialize;
 use std::io::{Read, Seek};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use symphonia::core::audio::{AudioBuffer, AudioBufferRef, Signal};
+use symphonia::core::conv::IntoSample;
+use symphonia::core::sample::Sample;
 use tauri::Emitter;
 
 struct CancelFlag(Arc<Mutex<bool>>);
@@ -155,6 +158,94 @@ fn ensure_output_path_allowed(output_path: &Path, policy: OverwritePolicy) -> Re
     Ok(())
 }
 
+fn build_output_path(file_path: &str) -> Result<PathBuf, String> {
+    let input_path = Path::new(file_path);
+    let stem = input_path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .ok_or_else(|| "Unable to determine a valid output filename".to_string())?;
+
+    Ok(input_path.with_file_name(format!("{stem}_mono.wav")))
+}
+
+fn normalized_f32_to_i16(sample: f32) -> i16 {
+    let clamped = if sample.is_finite() {
+        sample.clamp(-1.0, 1.0)
+    } else {
+        0.0
+    };
+
+    let scale = if clamped < 0.0 {
+        f32::from(i16::MAX) + 1.0
+    } else {
+        f32::from(i16::MAX)
+    };
+    let scaled = (clamped * scale).round();
+    scaled.clamp(f32::from(i16::MIN), f32::from(i16::MAX)) as i16
+}
+
+fn mono_frame_to_i16<T>(channels: &[T]) -> Option<i16>
+where
+    T: Sample + IntoSample<f32> + Copy,
+{
+    if channels.is_empty() {
+        return None;
+    }
+
+    let sum = channels
+        .iter()
+        .copied()
+        .map(IntoSample::<f32>::into_sample)
+        .sum::<f32>();
+    let average = sum / channels.len() as f32;
+    Some(normalized_f32_to_i16(average))
+}
+
+fn write_mono_buffer<T>(
+    buf: &AudioBuffer<T>,
+    writer: &mut hound::WavWriter<std::io::BufWriter<std::fs::File>>,
+) -> Result<(), hound::Error>
+where
+    T: Sample + IntoSample<f32> + Copy,
+{
+    let channels = buf.spec().channels.count();
+    if channels == 0 {
+        return Ok(());
+    }
+
+    let mut frame = Vec::with_capacity(channels);
+    for i in 0..buf.frames() {
+        frame.clear();
+        for ch in 0..channels {
+            frame.push(buf.chan(ch)[i]);
+        }
+
+        if let Some(mono) = mono_frame_to_i16(&frame) {
+            writer.write_sample(mono)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn write_audio_buffer(
+    decoded: AudioBufferRef<'_>,
+    writer: &mut hound::WavWriter<std::io::BufWriter<std::fs::File>>,
+) -> Result<(), hound::Error> {
+    match decoded {
+        AudioBufferRef::U8(buf) => write_mono_buffer(buf.as_ref(), writer),
+        AudioBufferRef::U16(buf) => write_mono_buffer(buf.as_ref(), writer),
+        AudioBufferRef::U24(buf) => write_mono_buffer(buf.as_ref(), writer),
+        AudioBufferRef::U32(buf) => write_mono_buffer(buf.as_ref(), writer),
+        AudioBufferRef::S8(buf) => write_mono_buffer(buf.as_ref(), writer),
+        AudioBufferRef::S16(buf) => write_mono_buffer(buf.as_ref(), writer),
+        AudioBufferRef::S24(buf) => write_mono_buffer(buf.as_ref(), writer),
+        AudioBufferRef::S32(buf) => write_mono_buffer(buf.as_ref(), writer),
+        AudioBufferRef::F32(buf) => write_mono_buffer(buf.as_ref(), writer),
+        AudioBufferRef::F64(buf) => write_mono_buffer(buf.as_ref(), writer),
+    }
+}
+
 #[tauri::command]
 fn cancel_conversion(state: tauri::State<CancelFlag>) {
     *state.0.lock().unwrap() = true;
@@ -241,7 +332,6 @@ fn convert_to_mono(
         let file_path = request.file_path;
         println!("Converting file: {}", file_path);
         use std::fs::File;
-        use symphonia::core::audio::{AudioBufferRef, Signal};
         use symphonia::core::codecs::DecoderOptions;
         use symphonia::core::formats::FormatOptions;
         use symphonia::core::io::MediaSourceStream;
@@ -389,154 +479,12 @@ fn convert_to_mono(
                 }
             };
 
-            // Convert to mono and write as i16
-            match decoded {
-                AudioBufferRef::U8(buf) => {
-                    let buf = buf.as_ref();
-                    let channels = buf.spec().channels.count();
-                    for i in 0..buf.frames() {
-                        let mut sum = 0.0;
-                        for ch in 0..channels {
-                            sum += buf.chan(ch)[i] as f32 / 128.0 - 1.0;
-                        }
-                        let mono = (sum / channels as f32 * 32767.0) as i16;
-                        if let Err(_) = writer.write_sample(mono) {
-                            let _ = app_clone.emit(
-                                "conversion-result",
-                                serde_json::json!({ "success": false, "error": "Write error" }),
-                            );
-                            return;
-                        }
-                    }
-                }
-                AudioBufferRef::U16(buf) => {
-                    let buf = buf.as_ref();
-                    let channels = buf.spec().channels.count();
-                    for i in 0..buf.frames() {
-                        let mut sum = 0.0;
-                        for ch in 0..channels {
-                            sum += buf.chan(ch)[i] as f32 / 32768.0 - 1.0;
-                        }
-                        let mono = (sum / channels as f32 * 32767.0) as i16;
-                        if let Err(_) = writer.write_sample(mono) {
-                            let _ = app_clone.emit(
-                                "conversion-result",
-                                serde_json::json!({ "success": false, "error": "Write error" }),
-                            );
-                            return;
-                        }
-                    }
-                }
-                AudioBufferRef::U24(_buf) => {}
-                AudioBufferRef::U32(buf) => {
-                    let buf = buf.as_ref();
-                    let channels = buf.spec().channels.count();
-                    for i in 0..buf.frames() {
-                        let mut sum = 0.0;
-                        for ch in 0..channels {
-                            sum += buf.chan(ch)[i] as f32 / 2147483648.0 - 1.0;
-                        }
-                        let mono = (sum / channels as f32 * 32767.0) as i16;
-                        if let Err(_) = writer.write_sample(mono) {
-                            let _ = app_clone.emit(
-                                "conversion-result",
-                                serde_json::json!({ "success": false, "error": "Write error" }),
-                            );
-                            return;
-                        }
-                    }
-                }
-                AudioBufferRef::S8(buf) => {
-                    let buf = buf.as_ref();
-                    let channels = buf.spec().channels.count();
-                    for i in 0..buf.frames() {
-                        let mut sum = 0.0;
-                        for ch in 0..channels {
-                            sum += buf.chan(ch)[i] as f32 / 128.0;
-                        }
-                        let mono = (sum / channels as f32 * 32767.0) as i16;
-                        if let Err(_) = writer.write_sample(mono) {
-                            let _ = app_clone.emit(
-                                "conversion-result",
-                                serde_json::json!({ "success": false, "error": "Write error" }),
-                            );
-                            return;
-                        }
-                    }
-                }
-                AudioBufferRef::S16(buf) => {
-                    let buf = buf.as_ref();
-                    let channels = buf.spec().channels.count();
-                    for i in 0..buf.frames() {
-                        let mut sum = 0.0;
-                        for ch in 0..channels {
-                            sum += buf.chan(ch)[i] as f32;
-                        }
-                        let mono = (sum / channels as f32) as i16;
-                        if let Err(_) = writer.write_sample(mono) {
-                            let _ = app_clone.emit(
-                                "conversion-result",
-                                serde_json::json!({ "success": false, "error": "Write error" }),
-                            );
-                            return;
-                        }
-                    }
-                }
-                AudioBufferRef::S24(_buf) => {}
-                AudioBufferRef::S32(buf) => {
-                    let buf = buf.as_ref();
-                    let channels = buf.spec().channels.count();
-                    for i in 0..buf.frames() {
-                        let mut sum = 0.0;
-                        for ch in 0..channels {
-                            sum += buf.chan(ch)[i] as f32 / 32768.0;
-                        }
-                        let mono = (sum / channels as f32) as i16;
-                        if let Err(_) = writer.write_sample(mono) {
-                            let _ = app_clone.emit(
-                                "conversion-result",
-                                serde_json::json!({ "success": false, "error": "Write error" }),
-                            );
-                            return;
-                        }
-                    }
-                }
-                AudioBufferRef::F32(buf) => {
-                    let buf = buf.as_ref();
-                    let channels = buf.spec().channels.count();
-                    for i in 0..buf.frames() {
-                        let mut sum = 0.0;
-                        for ch in 0..channels {
-                            sum += buf.chan(ch)[i];
-                        }
-                        let mono = (sum / channels as f32 * 32767.0) as i16;
-                        if let Err(_) = writer.write_sample(mono) {
-                            let _ = app_clone.emit(
-                                "conversion-result",
-                                serde_json::json!({ "success": false, "error": "Write error" }),
-                            );
-                            return;
-                        }
-                    }
-                }
-                AudioBufferRef::F64(buf) => {
-                    let buf = buf.as_ref();
-                    let channels = buf.spec().channels.count();
-                    for i in 0..buf.frames() {
-                        let mut sum = 0.0;
-                        for ch in 0..channels {
-                            sum += buf.chan(ch)[i] as f32;
-                        }
-                        let mono = (sum / channels as f32 * 32767.0) as i16;
-                        if let Err(_) = writer.write_sample(mono) {
-                            let _ = app_clone.emit(
-                                "conversion-result",
-                                serde_json::json!({ "success": false, "error": "Write error" }),
-                            );
-                            return;
-                        }
-                    }
-                }
+            if write_audio_buffer(decoded, &mut writer).is_err() {
+                let _ = app_clone.emit(
+                    "conversion-result",
+                    serde_json::json!({ "success": false, "error": "Write error" }),
+                );
+                return;
             }
         }
 
@@ -577,8 +525,9 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        ensure_output_path_allowed, render_output_filename, resolve_output_path, ConvertRequest,
-        OverwritePolicy, ProgressReader, get_audio_info,
+        build_output_path, ensure_output_path_allowed, get_audio_info, mono_frame_to_i16,
+        normalized_f32_to_i16, render_output_filename, resolve_output_path, ConvertRequest,
+        OverwritePolicy, ProgressReader,
     };
     use std::fs;
     use std::io::{Cursor, Read};
@@ -586,6 +535,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::{SystemTime, UNIX_EPOCH};
     use symphonia::core::io::MediaSource;
+    use symphonia::core::sample::{i24, u24};
 
     fn request(file_path: &str) -> ConvertRequest {
         ConvertRequest {
@@ -749,5 +699,38 @@ mod tests {
         assert!(output_path.parent().unwrap().exists());
 
         fs::remove_dir_all(test_dir).unwrap();
+    }
+
+    #[test]
+    fn output_path_replaces_only_the_final_extension() {
+        let output = build_output_path("/tmp/archive.mp3.wav").unwrap();
+        assert_eq!(output.to_string_lossy(), "/tmp/archive.mp3_mono.wav");
+    }
+
+    #[test]
+    fn output_path_does_not_trim_non_extensions() {
+        let output = build_output_path("/tmp/draw").unwrap();
+        assert_eq!(output.to_string_lossy(), "/tmp/draw_mono.wav");
+    }
+
+    #[test]
+    fn normalization_clamps_out_of_range_and_non_finite_values() {
+        assert_eq!(normalized_f32_to_i16(1.5), i16::MAX);
+        assert_eq!(normalized_f32_to_i16(-1.5), i16::MIN);
+        assert_eq!(normalized_f32_to_i16(f32::NAN), 0);
+    }
+
+    #[test]
+    fn mono_frame_supports_24_bit_formats() {
+        assert_eq!(mono_frame_to_i16(&[u24::MIN, u24::MAX]), Some(0));
+        assert_eq!(mono_frame_to_i16(&[i24::MIN, i24::MAX]), Some(0));
+    }
+
+    #[test]
+    fn mono_frame_scales_common_formats_consistently() {
+        assert_eq!(mono_frame_to_i16(&[u8::MIN]), Some(i16::MIN));
+        assert_eq!(mono_frame_to_i16(&[u8::MAX]), Some(32_511));
+        assert_eq!(mono_frame_to_i16(&[1.0f32]), Some(i16::MAX));
+        assert_eq!(mono_frame_to_i16(&[0.5f32, -0.25f32]), Some(4096));
     }
 }

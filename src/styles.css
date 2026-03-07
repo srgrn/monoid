@@ -1,18 +1,20 @@
 :root {
   font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  color: #f5f0e8;
+  background:
+    radial-gradient(circle at top, rgba(255, 173, 96, 0.22), transparent 28%),
+    linear-gradient(180deg, #201717 0%, #130f12 100%);
   font-size: 16px;
   line-height: 1.5;
   font-weight: 400;
-  color: #14213d;
-  background:
-    radial-gradient(circle at top, rgba(252, 163, 17, 0.18), transparent 32%),
-    linear-gradient(180deg, #f7f2e8 0%, #eef4ff 100%);
-
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  -webkit-text-size-adjust: 100%;
+}
+
+* {
+  box-sizing: border-box;
 }
 
 body {
@@ -20,162 +22,318 @@ body {
   min-height: 100vh;
 }
 
-.container {
-  min-height: 100vh;
-  padding: 6vh 1.5rem;
-  display: flex;
-  justify-content: center;
-}
-
-.panel {
-  width: min(780px, 100%);
-  margin: 0 auto;
-  padding: 2rem;
-  border: 1px solid rgba(20, 33, 61, 0.12);
-  border-radius: 20px;
-  background: rgba(255, 255, 255, 0.78);
-  box-shadow: 0 24px 60px rgba(20, 33, 61, 0.14);
-  backdrop-filter: blur(10px);
-}
-
-.subtitle {
-  margin-top: 0;
-  color: #4f5d75;
-}
-
-form {
-  display: grid;
-  gap: 1rem;
-}
-
-.field-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 1rem;
-}
-
-.field-group {
-  display: grid;
-  gap: 0.45rem;
-}
-
-label {
-  font-weight: 600;
-}
-
-.inline-field,
-.actions {
-  display: flex;
-  gap: 0.75rem;
-}
-
-.inline-field > input {
-  flex: 1;
-}
-
-input,
 button,
-select {
-  border-radius: 8px;
-  border: 1px solid rgba(20, 33, 61, 0.18);
-  padding: 0.75em 0.9em;
-  font-size: 1em;
-  font-weight: 500;
-  font-family: inherit;
-  color: #14213d;
-  background-color: rgba(255, 255, 255, 0.95);
-  transition: border-color 0.2s, box-shadow 0.2s, transform 0.2s;
-  box-shadow: 0 8px 18px rgba(20, 33, 61, 0.08);
+input {
+  font: inherit;
 }
 
 button {
+  border: 0;
+  border-radius: 999px;
+  padding: 0.8rem 1.2rem;
+  background: #f08f55;
+  color: #201717;
   cursor: pointer;
-  background: #fca311;
-  color: #14213d;
+  transition: transform 140ms ease, opacity 140ms ease, background 140ms ease;
 }
 
-button:hover,
-input:focus,
-select:focus {
-  border-color: #fca311;
-  box-shadow: 0 10px 24px rgba(252, 163, 17, 0.2);
+button:hover:not(:disabled) {
+  transform: translateY(-1px);
+  background: #ffad60;
 }
 
-button:active {
-  transform: translateY(1px);
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.shell {
+  width: min(1120px, calc(100vw - 2rem));
+  margin: 0 auto;
+  padding: 3rem 0 4rem;
+}
+
+.hero {
+  margin-bottom: 1.5rem;
+}
+
+.eyebrow {
+  margin: 0 0 0.5rem;
+  text-transform: uppercase;
+  letter-spacing: 0.2em;
+  color: #ffad60;
+  font-size: 0.8rem;
+}
+
+.hero h1 {
+  margin: 0;
+  max-width: 12ch;
+  font-size: clamp(2.4rem, 6vw, 4.75rem);
+  line-height: 0.95;
+}
+
+.lede {
+  max-width: 60ch;
+  color: #d7cac4;
+}
+
+.panel {
+  background: rgba(42, 30, 34, 0.78);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 24px;
+  box-shadow: 0 30px 60px rgba(0, 0, 0, 0.24);
+  backdrop-filter: blur(18px);
+}
+
+.controls {
+  display: grid;
+  gap: 1rem;
+  padding: 1.25rem;
+  margin-bottom: 1.25rem;
+}
+
+.output-controls {
+  display: grid;
+  gap: 0.9rem;
+  grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr) minmax(220px, 0.75fr);
+}
+
+.field {
+  display: grid;
+  gap: 0.45rem;
+  color: #e7dbd6;
+}
+
+.field small {
+  color: #bcaea8;
+}
+
+.field-compact {
+  align-content: start;
+}
+
+.field-inline {
+  display: flex;
+  gap: 0.6rem;
 }
 
 input,
-button,
 select {
-  outline: none;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.08);
+  color: #f5f0e8;
+  padding: 0.8rem 0.9rem;
 }
 
-.hint {
+.field-inline input {
+  flex: 1;
+}
+
+.actions,
+.toggles,
+.runbar {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.toggles label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  color: #e7dbd6;
+}
+
+.runbar {
+  justify-content: space-between;
+}
+
+#cancel-batch {
+  background: rgba(255, 255, 255, 0.12);
+  color: #f5f0e8;
+}
+
+#batch-status {
   margin: 0;
-  color: #6b7280;
-  font-size: 0.92rem;
+  color: #d7cac4;
 }
 
-#audio-info,
-#convert-msg,
-#progress-msg {
-  margin-bottom: 0;
+#batch-status[data-tone="success"] {
+  color: #86efac;
 }
 
-#progress-bar {
+#batch-status[data-tone="warning"] {
+  color: #fcd34d;
+}
+
+#batch-status[data-tone="error"] {
+  color: #fca5a5;
+}
+
+.dashboard {
+  display: grid;
+  gap: 1.25rem;
+  grid-template-columns: minmax(280px, 340px) minmax(0, 1fr);
+}
+
+.summary,
+.queue-panel {
+  padding: 1.25rem;
+}
+
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.9rem;
+  margin-bottom: 1rem;
+}
+
+.metric {
+  padding: 1rem;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.metric span {
+  display: block;
+  color: #bcaea8;
+  font-size: 0.85rem;
+}
+
+.metric strong {
+  display: block;
+  font-size: 2rem;
+}
+
+.progress-block {
+  padding: 1rem;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.progress-labels,
+.queue-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: baseline;
+}
+
+progress {
   width: 100%;
-  height: 14px;
+  height: 0.8rem;
+  margin: 0.75rem 0;
+  accent-color: #ffad60;
 }
 
-code {
-  font-family: "IBM Plex Mono", monospace;
+#batch-detail,
+#batch-stats,
+#queue-caption {
+  color: #cdbfba;
 }
 
-@media (max-width: 720px) {
-  .panel {
-    padding: 1.25rem;
+.queue-list {
+  list-style: none;
+  margin: 1rem 0 0;
+  padding: 0;
+  display: grid;
+  gap: 0.75rem;
+  max-height: 60vh;
+  overflow: auto;
+}
+
+.queue-item,
+.queue-empty {
+  padding: 0.9rem 1rem;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.queue-item {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: flex-start;
+}
+
+.queue-item strong,
+.queue-item p,
+.queue-meta {
+  margin: 0;
+}
+
+.queue-item p {
+  color: #bcaea8;
+  word-break: break-all;
+}
+
+.queue-meta {
+  display: grid;
+  gap: 0.35rem;
+  justify-items: end;
+  text-align: right;
+  color: #d7cac4;
+  min-width: 12rem;
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.2rem 0.65rem;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+  text-transform: capitalize;
+  font-size: 0.8rem;
+}
+
+.queue-item[data-status="done"] .pill {
+  background: rgba(74, 222, 128, 0.18);
+  color: #86efac;
+}
+
+.queue-item[data-status="failed"] .pill {
+  background: rgba(248, 113, 113, 0.18);
+  color: #fca5a5;
+}
+
+.queue-item[data-status="processing"] .pill {
+  background: rgba(251, 191, 36, 0.18);
+  color: #fcd34d;
+}
+
+.queue-item[data-status="skipped"] .pill,
+.queue-item[data-status="cancelled"] .pill {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+@media (max-width: 860px) {
+  .shell {
+    width: min(100vw - 1rem, 100%);
+    padding-top: 1.5rem;
   }
 
-  .field-grid {
+  .dashboard {
     grid-template-columns: 1fr;
   }
 
-  .inline-field,
-  .actions {
+  .output-controls {
+    grid-template-columns: 1fr;
+  }
+
+  .queue-item {
     flex-direction: column;
   }
-}
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    color: #f5f7fb;
-    background:
-      radial-gradient(circle at top, rgba(252, 163, 17, 0.18), transparent 28%),
-      linear-gradient(180deg, #172033 0%, #0b1320 100%);
+  .queue-meta {
+    min-width: 0;
+    justify-items: start;
+    text-align: left;
   }
 
-  .panel {
-    background: rgba(8, 15, 26, 0.82);
-    border-color: rgba(255, 255, 255, 0.08);
-    box-shadow: 0 24px 60px rgba(0, 0, 0, 0.34);
-  }
-
-  .subtitle,
-  .hint {
-    color: #b8c1d1;
-  }
-
-  input,
-  button,
-  select {
-    color: #f5f7fb;
-    background-color: rgba(18, 28, 45, 0.95);
-    border-color: rgba(255, 255, 255, 0.1);
-    box-shadow: 0 8px 18px rgba(0, 0, 0, 0.24);
-  }
-
-  button {
-    color: #0b1320;
+  .runbar {
+    justify-content: flex-start;
   }
 }

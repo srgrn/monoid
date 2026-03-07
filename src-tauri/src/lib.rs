@@ -1,14 +1,23 @@
-// Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-use serde::Deserialize;
+use std::fs::{self, File};
 use std::io::{Read, Seek};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use symphonia::core::audio::{AudioBuffer, AudioBufferRef, Signal};
-use symphonia::core::conv::IntoSample;
-use symphonia::core::sample::Sample;
+
+use serde::Deserialize;
+use symphonia::core::audio::SampleBuffer;
 use tauri::Emitter;
 
-struct CancelFlag(Arc<Mutex<bool>>);
+const SUPPORTED_EXTENSIONS: &[&str] = &[
+    "aac", "aiff", "caf", "flac", "m4a", "mkv", "mp3", "mp4", "ogg", "wav",
+];
+
+#[derive(Default)]
+struct ConversionState {
+    cancel_requested: bool,
+    running: bool,
+}
+
+struct AppState(Arc<Mutex<ConversionState>>);
 
 struct ProgressReader<R: Read + Seek + Send + Sync> {
     inner: R,
@@ -18,11 +27,11 @@ struct ProgressReader<R: Read + Seek + Send + Sync> {
 
 impl<R: Read + Seek + Send + Sync> Read for ProgressReader<R> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        let res = self.inner.read(buf);
-        if let Ok(n) = res {
-            *self.bytes_read.lock().unwrap() += n as u64;
+        let result = self.inner.read(buf);
+        if let Ok(bytes) = result {
+            *self.bytes_read.lock().unwrap() += bytes as u64;
         }
-        res
+        result
     }
 }
 
@@ -60,10 +69,11 @@ struct GetAudioInfoResponse {
     error: Option<String>,
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct ConvertRequest {
-    file_path: String,
+struct BatchConversionOptions {
+    skip_existing_outputs: bool,
+    stop_on_error: bool,
     output_dir: Option<String>,
     filename_template: Option<String>,
     overwrite_policy: Option<OverwritePolicy>,
@@ -80,6 +90,51 @@ impl Default for OverwritePolicy {
     fn default() -> Self {
         Self::Forbid
     }
+}
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BatchItemEvent {
+    file_path: String,
+    status: String,
+    output_path: Option<String>,
+    message: Option<String>,
+}
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BatchProgressEvent {
+    total: usize,
+    completed: usize,
+    succeeded: usize,
+    failed: usize,
+    skipped: usize,
+    cancelled: usize,
+    current_file: Option<String>,
+    current_file_progress: f64,
+    overall_progress: f64,
+    running: bool,
+    message: String,
+}
+
+#[derive(Default)]
+struct BatchCounters {
+    completed: usize,
+    succeeded: usize,
+    failed: usize,
+    skipped: usize,
+    cancelled: usize,
+}
+
+fn is_supported_audio_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| {
+            SUPPORTED_EXTENSIONS
+                .iter()
+                .any(|supported| supported.eq_ignore_ascii_case(extension))
+        })
+        .unwrap_or(false)
 }
 
 fn render_output_filename(template: &str, input_path: &Path) -> Result<String, String> {
@@ -108,35 +163,29 @@ fn render_output_filename(template: &str, input_path: &Path) -> Result<String, S
         format!("{rendered}.wav")
     };
 
-    let output_path = Path::new(&filename);
-    if output_path.components().count() != 1 {
+    if Path::new(&filename).components().count() != 1 {
         return Err("Filename template must not include path separators".to_string());
     }
 
     Ok(filename)
 }
 
-fn resolve_output_path(request: &ConvertRequest) -> Result<PathBuf, String> {
-    let input_path = Path::new(&request.file_path);
-    if request.file_path.trim().is_empty() {
-        return Err("Input file path is required".to_string());
-    }
-
-    let filename_template = request
+fn build_output_path(path: &Path, options: &BatchConversionOptions) -> Result<PathBuf, String> {
+    let filename_template = options
         .filename_template
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .unwrap_or("{stem}_mono");
-    let filename = render_output_filename(filename_template, input_path)?;
+    let filename = render_output_filename(filename_template, path)?;
 
-    let output_dir = request
+    let output_dir = options
         .output_dir
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
-        .or_else(|| input_path.parent().map(Path::to_path_buf))
+        .or_else(|| path.parent().map(Path::to_path_buf))
         .unwrap_or_else(|| PathBuf::from("."));
 
     Ok(output_dir.join(filename))
@@ -151,21 +200,11 @@ fn ensure_output_path_allowed(output_path: &Path, policy: OverwritePolicy) -> Re
     }
 
     if let Some(parent) = output_path.parent() {
-        std::fs::create_dir_all(parent)
+        fs::create_dir_all(parent)
             .map_err(|error| format!("Failed to prepare output directory: {error}"))?;
     }
 
     Ok(())
-}
-
-fn build_output_path(file_path: &str) -> Result<PathBuf, String> {
-    let input_path = Path::new(file_path);
-    let stem = input_path
-        .file_stem()
-        .and_then(|stem| stem.to_str())
-        .ok_or_else(|| "Unable to determine a valid output filename".to_string())?;
-
-    Ok(input_path.with_file_name(format!("{stem}_mono.wav")))
 }
 
 fn normalized_f32_to_i16(sample: f32) -> i16 {
@@ -184,327 +223,637 @@ fn normalized_f32_to_i16(sample: f32) -> i16 {
     scaled.clamp(f32::from(i16::MIN), f32::from(i16::MAX)) as i16
 }
 
-fn mono_frame_to_i16<T>(channels: &[T]) -> Option<i16>
-where
-    T: Sample + IntoSample<f32> + Copy,
-{
-    if channels.is_empty() {
-        return None;
-    }
-
-    let sum = channels
-        .iter()
-        .copied()
-        .map(IntoSample::<f32>::into_sample)
-        .sum::<f32>();
-    let average = sum / channels.len() as f32;
-    Some(normalized_f32_to_i16(average))
+fn collect_audio_files(folder_path: &Path) -> Result<Vec<String>, String> {
+    let mut files = Vec::new();
+    collect_audio_files_recursive(folder_path, &mut files)?;
+    files.sort();
+    Ok(files)
 }
 
-fn write_mono_buffer<T>(
-    buf: &AudioBuffer<T>,
-    writer: &mut hound::WavWriter<std::io::BufWriter<std::fs::File>>,
-) -> Result<(), hound::Error>
-where
-    T: Sample + IntoSample<f32> + Copy,
-{
-    let channels = buf.spec().channels.count();
-    if channels == 0 {
-        return Ok(());
-    }
+fn collect_audio_files_recursive(path: &Path, files: &mut Vec<String>) -> Result<(), String> {
+    for entry in fs::read_dir(path).map_err(|err| format!("Failed to read directory: {err}"))? {
+        let entry = entry.map_err(|err| format!("Failed to read directory entry: {err}"))?;
+        let entry_path = entry.path();
 
-    let mut frame = Vec::with_capacity(channels);
-    for i in 0..buf.frames() {
-        frame.clear();
-        for ch in 0..channels {
-            frame.push(buf.chan(ch)[i]);
-        }
-
-        if let Some(mono) = mono_frame_to_i16(&frame) {
-            writer.write_sample(mono)?;
+        if entry_path.is_dir() {
+            collect_audio_files_recursive(&entry_path, files)?;
+        } else if is_supported_audio_path(&entry_path) {
+            files.push(entry_path.to_string_lossy().to_string());
         }
     }
 
     Ok(())
 }
 
-fn write_audio_buffer(
-    decoded: AudioBufferRef<'_>,
-    writer: &mut hound::WavWriter<std::io::BufWriter<std::fs::File>>,
-) -> Result<(), hound::Error> {
-    match decoded {
-        AudioBufferRef::U8(buf) => write_mono_buffer(buf.as_ref(), writer),
-        AudioBufferRef::U16(buf) => write_mono_buffer(buf.as_ref(), writer),
-        AudioBufferRef::U24(buf) => write_mono_buffer(buf.as_ref(), writer),
-        AudioBufferRef::U32(buf) => write_mono_buffer(buf.as_ref(), writer),
-        AudioBufferRef::S8(buf) => write_mono_buffer(buf.as_ref(), writer),
-        AudioBufferRef::S16(buf) => write_mono_buffer(buf.as_ref(), writer),
-        AudioBufferRef::S24(buf) => write_mono_buffer(buf.as_ref(), writer),
-        AudioBufferRef::S32(buf) => write_mono_buffer(buf.as_ref(), writer),
-        AudioBufferRef::F32(buf) => write_mono_buffer(buf.as_ref(), writer),
-        AudioBufferRef::F64(buf) => write_mono_buffer(buf.as_ref(), writer),
+fn current_cancel_requested(state: &Arc<Mutex<ConversionState>>) -> bool {
+    state.lock().unwrap().cancel_requested
+}
+
+fn set_running_state(state: &Arc<Mutex<ConversionState>>, running: bool) {
+    let mut guard = state.lock().unwrap();
+    guard.running = running;
+    if !running {
+        guard.cancel_requested = false;
     }
 }
 
-#[tauri::command]
-fn cancel_conversion(state: tauri::State<CancelFlag>) {
-    *state.0.lock().unwrap() = true;
+fn emit_batch_item(
+    app: &tauri::AppHandle,
+    file_path: &str,
+    status: &str,
+    output_path: Option<&Path>,
+    message: Option<String>,
+) {
+    let payload = BatchItemEvent {
+        file_path: file_path.to_string(),
+        status: status.to_string(),
+        output_path: output_path.map(|path| path.to_string_lossy().to_string()),
+        message,
+    };
+
+    let _ = app.emit("batch-item", payload);
 }
 
-#[tauri::command]
-fn get_audio_info(file_path: String) -> GetAudioInfoResponse {
-    use std::fs::File;
+fn build_progress_event(
+    total: usize,
+    counters: &BatchCounters,
+    current_file: Option<&str>,
+    current_file_progress: f64,
+    running: bool,
+    message: impl Into<String>,
+) -> BatchProgressEvent {
+    let base_completed = counters.completed as f64;
+    let file_fraction = if total == 0 {
+        0.0
+    } else {
+        (base_completed + current_file_progress.clamp(0.0, 100.0) / 100.0) / total as f64
+    };
+
+    BatchProgressEvent {
+        total,
+        completed: counters.completed,
+        succeeded: counters.succeeded,
+        failed: counters.failed,
+        skipped: counters.skipped,
+        cancelled: counters.cancelled,
+        current_file: current_file.map(|file| file.to_string()),
+        current_file_progress,
+        overall_progress: (file_fraction * 100.0).clamp(0.0, 100.0),
+        running,
+        message: message.into(),
+    }
+}
+
+fn emit_batch_progress(
+    app: &tauri::AppHandle,
+    total: usize,
+    counters: &BatchCounters,
+    current_file: Option<&str>,
+    current_file_progress: f64,
+    running: bool,
+    message: impl Into<String>,
+) {
+    let payload = build_progress_event(
+        total,
+        counters,
+        current_file,
+        current_file_progress,
+        running,
+        message,
+    );
+    let _ = app.emit("batch-progress", payload);
+}
+
+fn emit_batch_finished(
+    app: &tauri::AppHandle,
+    total: usize,
+    counters: &BatchCounters,
+    message: impl Into<String>,
+) {
+    let payload = build_progress_event(total, counters, None, 100.0, false, message);
+    let _ = app.emit("batch-finished", payload);
+}
+
+fn get_audio_info_inner(file_path: &str) -> Result<AudioInfo, String> {
     use symphonia::core::formats::FormatOptions;
     use symphonia::core::io::MediaSourceStream;
     use symphonia::core::meta::MetadataOptions;
     use symphonia::core::probe::Hint;
 
-    match (|| -> Result<AudioInfo, String> {
-        let file = File::open(&file_path).map_err(|e| format!("Failed to open file: {}", e))?;
-        let mss = MediaSourceStream::new(Box::new(file), Default::default());
+    let file = File::open(file_path).map_err(|err| format!("Failed to open file: {err}"))?;
+    let media_source_stream = MediaSourceStream::new(Box::new(file), Default::default());
+    let probed = symphonia::default::get_probe()
+        .format(
+            &Hint::new(),
+            media_source_stream,
+            &FormatOptions::default(),
+            &MetadataOptions::default(),
+        )
+        .map_err(|err| format!("Unsupported format: {err}"))?;
 
-        let hint = Hint::new();
-        let format_opts = FormatOptions::default();
-        let metadata_opts = MetadataOptions::default();
-        let probed = symphonia::default::get_probe()
-            .format(&hint, mss, &format_opts, &metadata_opts)
-            .map_err(|e| format!("Unsupported format: {}", e))?;
+    let format = probed.format;
+    let track = format
+        .tracks()
+        .iter()
+        .find(|track| track.codec_params.codec != symphonia::core::codecs::CODEC_TYPE_NULL)
+        .ok_or_else(|| "No supported audio tracks".to_string())?;
 
-        let format = probed.format;
+    let channels = track
+        .codec_params
+        .channels
+        .map(|value| value.count() as u32)
+        .unwrap_or(0);
+    let sample_rate = track
+        .codec_params
+        .sample_rate
+        .ok_or_else(|| "Unknown sample rate".to_string())?;
+    let bits_per_sample = track.codec_params.bits_per_sample.unwrap_or(16);
+    let duration_seconds = track
+        .codec_params
+        .n_frames
+        .map(|frames| frames as f64 / sample_rate as f64);
 
-        let track = format
-            .tracks()
-            .iter()
-            .find(|t| t.codec_params.codec != symphonia::core::codecs::CODEC_TYPE_NULL)
-            .ok_or("No supported audio tracks")?;
+    Ok(AudioInfo {
+        channels,
+        sample_rate,
+        bits_per_sample,
+        duration_seconds,
+    })
+}
 
-        let channels = track
-            .codec_params
-            .channels
-            .map(|c| c.count() as u32)
-            .unwrap_or(0);
-        let sample_rate = track
-            .codec_params
-            .sample_rate
-            .ok_or("Unknown sample rate")?;
-        let bits_per_sample = track.codec_params.bits_per_sample.unwrap_or(16);
+fn convert_file_to_mono(
+    state: &Arc<Mutex<ConversionState>>,
+    file_path: &Path,
+    output_path: &Path,
+    mut on_progress: impl FnMut(f64),
+) -> Result<(), String> {
+    use symphonia::core::codecs::DecoderOptions;
+    use symphonia::core::formats::FormatOptions;
+    use symphonia::core::io::MediaSourceStream;
+    use symphonia::core::meta::MetadataOptions;
+    use symphonia::core::probe::Hint;
 
-        let duration_seconds = track
-            .codec_params
-            .n_frames
-            .map(|n| n as f64 / sample_rate as f64);
+    let input = File::open(file_path).map_err(|err| format!("Failed to open file: {err}"))?;
+    let total_size = input
+        .metadata()
+        .map_err(|err| format!("Failed to get file metadata: {err}"))?
+        .len();
+    let bytes_read = Arc::new(Mutex::new(0u64));
+    let progress_reader = ProgressReader {
+        inner: input,
+        bytes_read: bytes_read.clone(),
+        total_size,
+    };
+    let media_source_stream = MediaSourceStream::new(Box::new(progress_reader), Default::default());
 
-        Ok(AudioInfo {
-            channels,
+    let probed = symphonia::default::get_probe()
+        .format(
+            &Hint::new(),
+            media_source_stream,
+            &FormatOptions::default(),
+            &MetadataOptions::default(),
+        )
+        .map_err(|err| format!("Unsupported format: {err}"))?;
+
+    let mut format = probed.format;
+    let track = format
+        .tracks()
+        .iter()
+        .find(|track| track.codec_params.codec != symphonia::core::codecs::CODEC_TYPE_NULL)
+        .ok_or_else(|| "No supported audio tracks".to_string())?;
+    let track_id = track.id;
+    let sample_rate = track
+        .codec_params
+        .sample_rate
+        .ok_or_else(|| "Unknown sample rate".to_string())?;
+    let mut decoder = symphonia::default::get_codecs()
+        .make(&track.codec_params, &DecoderOptions::default())
+        .map_err(|err| format!("Unsupported codec: {err}"))?;
+
+    let mut writer = hound::WavWriter::create(
+        output_path,
+        hound::WavSpec {
+            channels: 1,
             sample_rate,
-            bits_per_sample,
-            duration_seconds,
-        })
-    })() {
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        },
+    )
+    .map_err(|err| format!("Failed to create WAV file: {err}"))?;
+
+    let mut last_reported_progress = -1.0f64;
+    on_progress(0.0);
+
+    loop {
+        if current_cancel_requested(state) {
+            let _ = fs::remove_file(output_path);
+            return Err("Conversion cancelled".to_string());
+        }
+
+        let packet = match format.next_packet() {
+            Ok(packet) => packet,
+            Err(symphonia::core::errors::Error::ResetRequired) => continue,
+            Err(_) => break,
+        };
+
+        if packet.track_id() != track_id {
+            continue;
+        }
+
+        let decoded = decoder
+            .decode(&packet)
+            .map_err(|err| format!("Decode error: {err}"))?;
+        let spec = *decoded.spec();
+        let channels = spec.channels.count();
+        let mut sample_buffer = SampleBuffer::<f32>::new(decoded.capacity() as u64, spec);
+        sample_buffer.copy_interleaved_ref(decoded);
+
+        for frame in sample_buffer.samples().chunks(channels) {
+            let sum: f32 = frame.iter().copied().sum();
+            let mono = (sum / channels as f32).clamp(-1.0, 1.0);
+            writer
+                .write_sample(normalized_f32_to_i16(mono))
+                .map_err(|_| "Write error".to_string())?;
+        }
+
+        let progress = if total_size == 0 {
+            100.0
+        } else {
+            (*bytes_read.lock().unwrap() as f64 / total_size as f64 * 100.0).clamp(0.0, 100.0)
+        };
+        if (progress - last_reported_progress).abs() >= 1.0 {
+            on_progress(progress);
+            last_reported_progress = progress;
+        }
+    }
+
+    writer
+        .finalize()
+        .map_err(|_| "Finalize error".to_string())?;
+    on_progress(100.0);
+    Ok(())
+}
+
+fn unique_paths(file_paths: Vec<String>) -> Vec<String> {
+    let mut unique = Vec::new();
+    for file_path in file_paths {
+        if file_path.trim().is_empty() || unique.iter().any(|existing| existing == &file_path) {
+            continue;
+        }
+        unique.push(file_path);
+    }
+    unique
+}
+
+fn start_batch_job(
+    app: tauri::AppHandle,
+    shared_state: Arc<Mutex<ConversionState>>,
+    file_paths: Vec<String>,
+    options: BatchConversionOptions,
+) {
+    tauri::async_runtime::spawn(async move {
+        let queue = unique_paths(file_paths);
+        let total = queue.len();
+        let mut counters = BatchCounters::default();
+        let mut stopped_after_error = false;
+
+        emit_batch_progress(
+            &app,
+            total,
+            &counters,
+            None,
+            0.0,
+            true,
+            "Batch conversion started",
+        );
+
+        for file_path in &queue {
+            if current_cancel_requested(&shared_state) {
+                counters.cancelled += 1;
+                counters.completed += 1;
+                emit_batch_item(
+                    &app,
+                    file_path,
+                    "cancelled",
+                    None,
+                    Some("Cancelled before processing".to_string()),
+                );
+                continue;
+            }
+
+            let source_path = PathBuf::from(file_path);
+            if !is_supported_audio_path(&source_path) {
+                counters.failed += 1;
+                counters.completed += 1;
+                emit_batch_item(
+                    &app,
+                    file_path,
+                    "failed",
+                    None,
+                    Some("Unsupported file type".to_string()),
+                );
+                emit_batch_progress(
+                    &app,
+                    total,
+                    &counters,
+                    None,
+                    0.0,
+                    true,
+                    format!("Failed: {}", source_path.display()),
+                );
+                if options.stop_on_error {
+                    stopped_after_error = true;
+                    break;
+                }
+                continue;
+            }
+
+            let output_path = match build_output_path(&source_path, &options) {
+                Ok(path) => path,
+                Err(error) => {
+                    counters.failed += 1;
+                    counters.completed += 1;
+                    emit_batch_item(&app, file_path, "failed", None, Some(error.clone()));
+                    emit_batch_progress(
+                        &app,
+                        total,
+                        &counters,
+                        None,
+                        0.0,
+                        true,
+                        format!("Failed: {}", source_path.display()),
+                    );
+                    if options.stop_on_error {
+                        stopped_after_error = true;
+                        break;
+                    }
+                    continue;
+                }
+            };
+            if options.skip_existing_outputs && output_path.exists() {
+                counters.skipped += 1;
+                counters.completed += 1;
+                emit_batch_item(
+                    &app,
+                    file_path,
+                    "skipped",
+                    Some(&output_path),
+                    Some("Output already exists".to_string()),
+                );
+                emit_batch_progress(
+                    &app,
+                    total,
+                    &counters,
+                    None,
+                    0.0,
+                    true,
+                    format!("Skipped existing output for {}", source_path.display()),
+                );
+                continue;
+            }
+
+            if let Err(error) = ensure_output_path_allowed(
+                &output_path,
+                options.overwrite_policy.unwrap_or_default(),
+            ) {
+                counters.failed += 1;
+                counters.completed += 1;
+                emit_batch_item(
+                    &app,
+                    file_path,
+                    "failed",
+                    Some(&output_path),
+                    Some(error.clone()),
+                );
+                emit_batch_progress(
+                    &app,
+                    total,
+                    &counters,
+                    None,
+                    0.0,
+                    true,
+                    format!("Failed: {}", source_path.display()),
+                );
+                if options.stop_on_error {
+                    stopped_after_error = true;
+                    break;
+                }
+                continue;
+            }
+
+            emit_batch_item(
+                &app,
+                file_path,
+                "processing",
+                Some(&output_path),
+                Some("Converting to mono".to_string()),
+            );
+
+            let source_label = source_path.to_string_lossy().to_string();
+            let progress_app = app.clone();
+            let progress_counters = counters.completed;
+            let progress_total = total;
+            let progress_message = format!("Processing {}", source_path.display());
+            let progress_state_snapshot = BatchCounters {
+                completed: progress_counters,
+                succeeded: counters.succeeded,
+                failed: counters.failed,
+                skipped: counters.skipped,
+                cancelled: counters.cancelled,
+            };
+
+            let result =
+                convert_file_to_mono(&shared_state, &source_path, &output_path, move |progress| {
+                    emit_batch_progress(
+                        &progress_app,
+                        progress_total,
+                        &progress_state_snapshot,
+                        Some(&source_label),
+                        progress,
+                        true,
+                        &progress_message,
+                    );
+                });
+
+            match result {
+                Ok(()) => {
+                    counters.succeeded += 1;
+                    counters.completed += 1;
+                    emit_batch_item(
+                        &app,
+                        file_path,
+                        "done",
+                        Some(&output_path),
+                        Some("Converted".to_string()),
+                    );
+                    emit_batch_progress(
+                        &app,
+                        total,
+                        &counters,
+                        None,
+                        0.0,
+                        true,
+                        format!("Finished {}", source_path.display()),
+                    );
+                }
+                Err(error) if error == "Conversion cancelled" => {
+                    counters.cancelled += 1;
+                    counters.completed += 1;
+                    emit_batch_item(
+                        &app,
+                        file_path,
+                        "cancelled",
+                        Some(&output_path),
+                        Some("Cancelled during conversion".to_string()),
+                    );
+                }
+                Err(error) => {
+                    let _ = fs::remove_file(&output_path);
+                    counters.failed += 1;
+                    counters.completed += 1;
+                    emit_batch_item(
+                        &app,
+                        file_path,
+                        "failed",
+                        Some(&output_path),
+                        Some(error.clone()),
+                    );
+                    emit_batch_progress(
+                        &app,
+                        total,
+                        &counters,
+                        None,
+                        0.0,
+                        true,
+                        format!("Failed {}", source_path.display()),
+                    );
+                    if options.stop_on_error {
+                        stopped_after_error = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if current_cancel_requested(&shared_state) {
+            for file_path in queue.iter().skip(counters.completed) {
+                counters.cancelled += 1;
+                counters.completed += 1;
+                emit_batch_item(
+                    &app,
+                    file_path,
+                    "cancelled",
+                    None,
+                    Some("Cancelled before processing".to_string()),
+                );
+            }
+        } else if stopped_after_error {
+            for file_path in queue.iter().skip(counters.completed) {
+                counters.cancelled += 1;
+                counters.completed += 1;
+                emit_batch_item(
+                    &app,
+                    file_path,
+                    "cancelled",
+                    None,
+                    Some("Stopped after a previous failure".to_string()),
+                );
+            }
+        }
+
+        let final_message = if current_cancel_requested(&shared_state) {
+            format!(
+                "Batch cancelled. {} converted, {} skipped, {} failed.",
+                counters.succeeded, counters.skipped, counters.failed
+            )
+        } else if counters.failed > 0 {
+            format!(
+                "Batch finished with failures. {} converted, {} skipped, {} failed.",
+                counters.succeeded, counters.skipped, counters.failed
+            )
+        } else {
+            format!(
+                "Batch complete. {} converted, {} skipped.",
+                counters.succeeded, counters.skipped
+            )
+        };
+
+        set_running_state(&shared_state, false);
+        emit_batch_finished(&app, total, &counters, final_message);
+    });
+}
+
+#[tauri::command]
+fn cancel_conversion(state: tauri::State<AppState>) {
+    let mut guard = state.0.lock().unwrap();
+    if guard.running {
+        guard.cancel_requested = true;
+    }
+}
+
+#[tauri::command]
+fn get_audio_info(file_path: String) -> GetAudioInfoResponse {
+    match get_audio_info_inner(&file_path) {
         Ok(info) => GetAudioInfoResponse {
             success: true,
             data: Some(info),
             error: None,
         },
-        Err(e) => GetAudioInfoResponse {
+        Err(error) => GetAudioInfoResponse {
             success: false,
             data: None,
-            error: Some(e),
+            error: Some(error),
         },
     }
 }
 
 #[tauri::command]
+fn list_supported_audio_files(folder_path: String) -> Result<Vec<String>, String> {
+    collect_audio_files(Path::new(&folder_path))
+}
+
+#[tauri::command]
+fn start_batch_conversion(
+    app: tauri::AppHandle,
+    state: tauri::State<AppState>,
+    file_paths: Vec<String>,
+    options: BatchConversionOptions,
+) -> Result<(), String> {
+    if file_paths.is_empty() {
+        return Err("Add at least one file to start a batch.".to_string());
+    }
+
+    {
+        let mut guard = state.0.lock().unwrap();
+        if guard.running {
+            return Err("A conversion is already running.".to_string());
+        }
+        guard.running = true;
+        guard.cancel_requested = false;
+    }
+
+    start_batch_job(app, state.0.clone(), file_paths, options);
+    Ok(())
+}
+
+#[tauri::command]
 fn convert_to_mono(
     app: tauri::AppHandle,
-    state: tauri::State<CancelFlag>,
-    request: ConvertRequest,
+    state: tauri::State<AppState>,
+    file_path: String,
 ) -> Result<(), String> {
-    {
-        let mut cancel = state.0.lock().unwrap();
-        *cancel = false;
-    }
-    let cancel_flag = state.0.clone();
-    let app_clone = app.clone();
-    let output_path = resolve_output_path(&request)?;
-    ensure_output_path_allowed(&output_path, request.overwrite_policy.unwrap_or_default())?;
-    tauri::async_runtime::spawn(async move {
-        let file_path = request.file_path;
-        println!("Converting file: {}", file_path);
-        use std::fs::File;
-        use symphonia::core::codecs::DecoderOptions;
-        use symphonia::core::formats::FormatOptions;
-        use symphonia::core::io::MediaSourceStream;
-        use symphonia::core::meta::MetadataOptions;
-        use symphonia::core::probe::Hint;
-
-        // Open the input file
-        let file = match File::open(&file_path) {
-            Ok(f) => f,
-            Err(e) => {
-                println!("Failed to open file: {:?}", e);
-                let _ = app_clone.emit("conversion-result", serde_json::json!({ "success": false, "error": format!("Failed to open file: {}", e) }));
-                return;
-            }
-        };
-        let total_size = match file.metadata() {
-            Ok(m) => m.len(),
-            Err(e) => {
-                println!("Failed to get file metadata: {:?}", e);
-                let _ = app_clone.emit("conversion-result", serde_json::json!({ "success": false, "error": format!("Failed to get file metadata: {}", e) }));
-                return;
-            }
-        };
-        let bytes_read = Arc::new(Mutex::new(0u64));
-        let progress_reader = ProgressReader {
-            inner: file,
-            bytes_read: bytes_read.clone(),
-            total_size,
-        };
-        let mss = MediaSourceStream::new(Box::new(progress_reader), Default::default());
-
-        // Probe the format
-        let hint = Hint::new();
-        let format_opts = FormatOptions::default();
-        let metadata_opts = MetadataOptions::default();
-        let probed = match symphonia::default::get_probe().format(
-            &hint,
-            mss,
-            &format_opts,
-            &metadata_opts,
-        ) {
-            Ok(p) => p,
-            Err(e) => {
-                println!("Unsupported format error: {:?}", e);
-                let _ = app_clone.emit("conversion-result", serde_json::json!({ "success": false, "error": format!("Unsupported format: {}", e) }));
-                return;
-            }
-        };
-
-        let mut format = probed.format;
-
-        // Get the default track
-        let track = match format
-            .tracks()
-            .iter()
-            .find(|t| t.codec_params.codec != symphonia::core::codecs::CODEC_TYPE_NULL)
-        {
-            Some(t) => t,
-            None => {
-                let _ = app_clone.emit(
-                    "conversion-result",
-                    serde_json::json!({ "success": false, "error": "No supported audio tracks" }),
-                );
-                return;
-            }
-        };
-
-        let track_id = track.id;
-        let sample_rate = match track.codec_params.sample_rate {
-            Some(sr) => sr,
-            None => {
-                let _ = app_clone.emit(
-                    "conversion-result",
-                    serde_json::json!({ "success": false, "error": "Unknown sample rate" }),
-                );
-                return;
-            }
-        };
-
-        // Create a decoder
-        let dec_opts = DecoderOptions::default();
-        let mut decoder = match symphonia::default::get_codecs()
-            .make(&track.codec_params, &dec_opts)
-        {
-            Ok(d) => d,
-            Err(e) => {
-                let _ = app_clone.emit("conversion-result", serde_json::json!({ "success": false, "error": format!("Unsupported codec: {}", e) }));
-                return;
-            }
-        };
-
-        // Prepare output WAV file with hound
-        let spec = hound::WavSpec {
-            channels: 1,
-            sample_rate,
-            bits_per_sample: 16,
-            sample_format: hound::SampleFormat::Int,
-        };
-        let mut writer = match hound::WavWriter::create(&output_path, spec) {
-            Ok(w) => w,
-            Err(e) => {
-                let _ = app_clone.emit("conversion-result", serde_json::json!({ "success": false, "error": format!("Failed to create WAV file: {}", e) }));
-                return;
-            }
-        };
-
-        // Emit start
-        let _ = app_clone.emit("progress", "Starting conversion...");
-
-        // Decode and convert
-        let mut packet_count = 0;
-        loop {
-            if *cancel_flag.lock().unwrap() {
-                let _ = std::fs::remove_file(&output_path);
-                let _ = app_clone.emit(
-                    "conversion-result",
-                    serde_json::json!({ "success": false, "error": "Conversion cancelled" }),
-                );
-                return;
-            }
-
-            let packet = match format.next_packet() {
-                Ok(packet) => packet,
-                Err(symphonia::core::errors::Error::ResetRequired) => continue,
-                Err(_) => break,
-            };
-
-            if packet.track_id() != track_id {
-                continue;
-            }
-
-            packet_count += 1;
-            if packet_count % 100 == 0 {
-                let current_bytes = *bytes_read.lock().unwrap();
-                let progress = (current_bytes as f64 / total_size as f64 * 100.0) as f64;
-                println!("Progress: {:.1}% ({} packets)", progress, packet_count);
-                let _ = app_clone.emit("progress", format!("{:.1}%", progress));
-            }
-
-            let decoded = match decoder.decode(&packet) {
-                Ok(d) => d,
-                Err(e) => {
-                    let _ = app_clone.emit("conversion-result", serde_json::json!({ "success": false, "error": format!("Decode error: {}", e) }));
-                    return;
-                }
-            };
-
-            if write_audio_buffer(decoded, &mut writer).is_err() {
-                let _ = app_clone.emit(
-                    "conversion-result",
-                    serde_json::json!({ "success": false, "error": "Write error" }),
-                );
-                return;
-            }
-        }
-
-        if writer.finalize().is_err() {
-            let _ = app_clone.emit(
-                "conversion-result",
-                serde_json::json!({ "success": false, "error": "Finalize error" }),
-            );
-            return;
-        }
-
-        println!("Total packets processed: {}", packet_count);
-        let _ = app_clone.emit(
-            "progress",
-            format!("Conversion complete. Total packets: {}", packet_count),
-        );
-        let _ = app_clone.emit("conversion-result", serde_json::json!({ "success": true, "message": format!("Converted to mono: {}", output_path.display()) }));
-    });
-
-    Ok(())
+    start_batch_conversion(
+        app,
+        state,
+        vec![file_path],
+        BatchConversionOptions {
+            skip_existing_outputs: false,
+            stop_on_error: true,
+            output_dir: None,
+            filename_template: None,
+            overwrite_policy: None,
+        },
+    )
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -512,11 +861,13 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
-        .manage(CancelFlag(Arc::new(Mutex::new(false))))
+        .manage(AppState(Arc::new(Mutex::new(ConversionState::default()))))
         .invoke_handler(tauri::generate_handler![
+            cancel_conversion,
             convert_to_mono,
             get_audio_info,
-            cancel_conversion
+            list_supported_audio_files,
+            start_batch_conversion
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -525,212 +876,119 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_output_path, ensure_output_path_allowed, get_audio_info, mono_frame_to_i16,
-        normalized_f32_to_i16, render_output_filename, resolve_output_path, ConvertRequest,
-        OverwritePolicy, ProgressReader,
+        build_output_path, collect_audio_files, ensure_output_path_allowed,
+        is_supported_audio_path, normalized_f32_to_i16, render_output_filename, unique_paths,
+        BatchConversionOptions, OverwritePolicy,
     };
     use std::fs;
-    use std::io::{Cursor, Read};
-    use std::path::{Path, PathBuf};
-    use std::sync::{Arc, Mutex};
+    use std::path::Path;
     use std::time::{SystemTime, UNIX_EPOCH};
-    use symphonia::core::io::MediaSource;
-    use symphonia::core::sample::{i24, u24};
-
-    fn request(file_path: &str) -> ConvertRequest {
-        ConvertRequest {
-            file_path: file_path.to_string(),
-            output_dir: None,
-            filename_template: None,
-            overwrite_policy: None,
-        }
-    }
-
-    fn temp_wav_path(name: &str) -> PathBuf {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        std::env::temp_dir().join(format!("monoid-{name}-{nanos}.wav"))
-    }
-
-    fn write_test_wav(path: &PathBuf, channels: u16, sample_rate: u32, frames: &[i16]) {
-        let spec = hound::WavSpec {
-            channels,
-            sample_rate,
-            bits_per_sample: 16,
-            sample_format: hound::SampleFormat::Int,
-        };
-        let mut writer = hound::WavWriter::create(path, spec).unwrap();
-        for frame in frames {
-            writer.write_sample(*frame).unwrap();
-        }
-        writer.finalize().unwrap();
-    }
 
     #[test]
-    fn progress_reader_tracks_bytes_read() {
-        let bytes_read = Arc::new(Mutex::new(0u64));
-        let mut reader = ProgressReader {
-            inner: Cursor::new(vec![1_u8, 2, 3, 4, 5]),
-            bytes_read: bytes_read.clone(),
-            total_size: 5,
-        };
-
-        let mut buf = [0_u8; 3];
-        let read = reader.read(&mut buf).unwrap();
-
-        assert_eq!(read, 3);
-        assert_eq!(buf, [1, 2, 3]);
-        assert_eq!(*bytes_read.lock().unwrap(), 3);
-        assert_eq!(reader.byte_len(), Some(5));
-        assert!(reader.is_seekable());
-    }
-
-    #[test]
-    fn get_audio_info_reads_wav_metadata() {
-        let path = temp_wav_path("audio-info");
-        write_test_wav(
-            &path,
-            2,
-            48_000,
-            &[1000, -1000, 2000, -2000, 3000, -3000, 4000, -4000],
-        );
-
-        let response = get_audio_info(path.to_string_lossy().into_owned());
-
-        fs::remove_file(&path).unwrap();
-
-        assert!(response.success);
-        let info = response.data.expect("audio info should be present");
-        assert_eq!(info.channels, 2);
-        assert_eq!(info.sample_rate, 48_000);
-        assert_eq!(info.bits_per_sample, 16);
-        assert_eq!(info.duration_seconds, Some(4.0 / 48_000.0));
-        assert!(response.error.is_none());
-    }
-
-    #[test]
-    fn get_audio_info_reports_missing_files() {
-        let path = temp_wav_path("missing");
-
-        let response = get_audio_info(path.to_string_lossy().into_owned());
-
-        assert!(!response.success);
-        assert!(response.data.is_none());
-        assert!(response
-            .error
-            .as_deref()
-            .unwrap_or_default()
-            .contains("Failed to open file"));
-    }
-
-    #[test]
-    fn render_output_filename_replaces_supported_tokens() {
-        let filename = render_output_filename(
-            "{stem}-{original_ext}-mono.{ext}",
-            Path::new("/tmp/demo/song.flac"),
+    fn build_output_path_replaces_extension() {
+        let output = build_output_path(
+            Path::new("/tmp/example.track.mp3"),
+            &BatchConversionOptions {
+                skip_existing_outputs: false,
+                stop_on_error: true,
+                output_dir: None,
+                filename_template: None,
+                overwrite_policy: None,
+            },
         )
         .unwrap();
-
-        assert_eq!(filename, "song-flac-mono.wav");
+        assert_eq!(output.to_string_lossy(), "/tmp/example.track_mono.wav");
     }
 
     #[test]
-    fn resolve_output_path_defaults_to_source_directory() {
-        let output_path = resolve_output_path(&request("/tmp/demo/song.mp3")).unwrap();
-
-        assert_eq!(output_path, Path::new("/tmp/demo/song_mono.wav"));
+    fn build_output_path_supports_custom_directory_and_template() {
+        let output = build_output_path(
+            Path::new("/tmp/example.track.mp3"),
+            &BatchConversionOptions {
+                skip_existing_outputs: false,
+                stop_on_error: true,
+                output_dir: Some("/var/tmp/exports".to_string()),
+                filename_template: Some("{stem}-batch.{ext}".to_string()),
+                overwrite_policy: Some(OverwritePolicy::Overwrite),
+            },
+        )
+        .unwrap();
+        assert_eq!(output.to_string_lossy(), "/var/tmp/exports/example.track-batch.wav");
     }
 
     #[test]
-    fn resolve_output_path_honors_custom_directory_and_template() {
-        let mut request = request("/tmp/demo/song.mp3");
-        request.output_dir = Some("/tmp/rendered".to_string());
-        request.filename_template = Some("{stem}_mixdown".to_string());
-
-        let output_path = resolve_output_path(&request).unwrap();
-
-        assert_eq!(output_path, Path::new("/tmp/rendered/song_mixdown.wav"));
+    fn render_output_filename_rejects_path_segments() {
+        let error = render_output_filename("../{stem}", Path::new("/tmp/example.mp3")).unwrap_err();
+        assert!(error.contains("path separators"));
     }
 
     #[test]
-    fn resolve_output_path_rejects_path_segments_in_template() {
-        let mut request = request("/tmp/demo/song.mp3");
-        request.filename_template = Some("../escape".to_string());
-
-        let error = resolve_output_path(&request).unwrap_err();
-
-        assert!(error.contains("must not include path separators"));
-    }
-
-    #[test]
-    fn ensure_output_path_allowed_rejects_existing_file_without_overwrite() {
-        let test_dir = std::env::temp_dir().join(format!(
-            "monoid-pcu-test-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
+    fn ensure_output_path_allowed_rejects_existing_files_without_overwrite() {
+        let base = std::env::temp_dir().join(format!(
+            "monoid-output-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
                 .unwrap()
                 .as_nanos()
         ));
-        fs::create_dir_all(&test_dir).unwrap();
-        let output_path = test_dir.join("existing.wav");
-        fs::write(&output_path, "occupied").unwrap();
+        fs::create_dir_all(&base).unwrap();
+        let output = base.join("existing.wav");
+        fs::write(&output, b"test").unwrap();
 
-        let error = ensure_output_path_allowed(&output_path, OverwritePolicy::Forbid).unwrap_err();
+        let error = ensure_output_path_allowed(&output, OverwritePolicy::Forbid).unwrap_err();
         assert!(error.contains("already exists"));
 
-        fs::remove_dir_all(test_dir).unwrap();
+        fs::remove_dir_all(base).unwrap();
     }
 
     #[test]
-    fn ensure_output_path_allowed_creates_parent_directories() {
-        let test_dir = std::env::temp_dir().join(format!(
-            "monoid-pcu-test-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
+    fn normalization_clamps_non_finite_and_out_of_range_values() {
+        assert_eq!(normalized_f32_to_i16(f32::NAN), 0);
+        assert_eq!(normalized_f32_to_i16(f32::INFINITY), 0);
+        assert_eq!(normalized_f32_to_i16(1.5), i16::MAX);
+        assert_eq!(normalized_f32_to_i16(-1.5), i16::MIN);
+    }
+
+    #[test]
+    fn support_check_handles_extension_case() {
+        assert!(is_supported_audio_path(Path::new("/tmp/song.FLAC")));
+        assert!(!is_supported_audio_path(Path::new("/tmp/notes.txt")));
+    }
+
+    #[test]
+    fn unique_paths_preserves_order() {
+        assert_eq!(
+            unique_paths(vec![
+                "".to_string(),
+                "/tmp/a.wav".to_string(),
+                "/tmp/a.wav".to_string(),
+                "/tmp/b.wav".to_string(),
+            ]),
+            vec!["/tmp/a.wav".to_string(), "/tmp/b.wav".to_string()]
+        );
+    }
+
+    #[test]
+    fn collect_audio_files_walks_nested_directories() {
+        let base = std::env::temp_dir().join(format!(
+            "monoid-batch-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
                 .unwrap()
                 .as_nanos()
         ));
-        let output_path = test_dir.join("nested/output.wav");
+        let nested = base.join("nested");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(base.join("one.wav"), b"test").unwrap();
+        fs::write(nested.join("two.mp3"), b"test").unwrap();
+        fs::write(nested.join("three.txt"), b"test").unwrap();
 
-        ensure_output_path_allowed(&output_path, OverwritePolicy::Overwrite).unwrap();
+        let files = collect_audio_files(&base).unwrap();
 
-        assert!(output_path.parent().unwrap().exists());
+        assert_eq!(files.len(), 2);
+        assert!(files.iter().any(|file| file.ends_with("one.wav")));
+        assert!(files.iter().any(|file| file.ends_with("two.mp3")));
 
-        fs::remove_dir_all(test_dir).unwrap();
-    }
-
-    #[test]
-    fn output_path_replaces_only_the_final_extension() {
-        let output = build_output_path("/tmp/archive.mp3.wav").unwrap();
-        assert_eq!(output.to_string_lossy(), "/tmp/archive.mp3_mono.wav");
-    }
-
-    #[test]
-    fn output_path_does_not_trim_non_extensions() {
-        let output = build_output_path("/tmp/draw").unwrap();
-        assert_eq!(output.to_string_lossy(), "/tmp/draw_mono.wav");
-    }
-
-    #[test]
-    fn normalization_clamps_out_of_range_and_non_finite_values() {
-        assert_eq!(normalized_f32_to_i16(1.5), i16::MAX);
-        assert_eq!(normalized_f32_to_i16(-1.5), i16::MIN);
-        assert_eq!(normalized_f32_to_i16(f32::NAN), 0);
-    }
-
-    #[test]
-    fn mono_frame_supports_24_bit_formats() {
-        assert_eq!(mono_frame_to_i16(&[u24::MIN, u24::MAX]), Some(0));
-        assert_eq!(mono_frame_to_i16(&[i24::MIN, i24::MAX]), Some(0));
-    }
-
-    #[test]
-    fn mono_frame_scales_common_formats_consistently() {
-        assert_eq!(mono_frame_to_i16(&[u8::MIN]), Some(i16::MIN));
-        assert_eq!(mono_frame_to_i16(&[u8::MAX]), Some(32_511));
-        assert_eq!(mono_frame_to_i16(&[1.0f32]), Some(i16::MAX));
-        assert_eq!(mono_frame_to_i16(&[0.5f32, -0.25f32]), Some(4096));
+        fs::remove_dir_all(base).unwrap();
     }
 }

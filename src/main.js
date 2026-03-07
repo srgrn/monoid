@@ -1,177 +1,269 @@
+import { mergeQueue, summarizeQueue } from "./queue.js";
+
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
 
-let fileInputEl;
-let outputDirEl;
-let filenameTemplateEl;
-let overwritePolicyEl;
-let convertMsgEl;
-let progressMsgEl;
-let outputPreviewEl;
+let queue = [];
+let running = false;
+let outputDirInput;
+let filenameTemplateInput;
+let overwritePolicyInput;
+let progressState = {
+  total: 0,
+  completed: 0,
+  succeeded: 0,
+  failed: 0,
+  skipped: 0,
+  cancelled: 0,
+  currentFile: null,
+  currentFileProgress: 0,
+  overallProgress: 0,
+  message: "",
+};
 
-async function selectFile() {
-  try {
-    const selected = await window.__TAURI__.dialog.open({
-      multiple: false,
-      filters: [{
-        name: 'Audio Files',
-        extensions: ['wav', 'mp3', 'flac', 'aac', 'ogg', 'm4a', 'mp4']
-      }]
-    });
-    if (selected) {
-      fileInputEl.value = selected;
-      if (!outputDirEl.value) {
-        const source = getSourceParts();
-        if (source?.sourceDir) {
-          outputDirEl.value = source.sourceDir;
+function byId(id) {
+  return document.getElementById(id);
+}
+
+function setStatus(message, tone = "neutral") {
+  const statusEl = byId("batch-status");
+  statusEl.textContent = message;
+  statusEl.dataset.tone = tone;
+}
+
+function setRunningState(nextRunning) {
+  running = nextRunning;
+  byId("add-files").disabled = nextRunning;
+  byId("add-folder").disabled = nextRunning;
+  byId("clear-queue").disabled = nextRunning || queue.length === 0;
+  byId("start-batch").disabled = nextRunning || queue.length === 0;
+  byId("cancel-batch").disabled = !nextRunning;
+  byId("skip-existing").disabled = nextRunning;
+  byId("stop-on-error").disabled = nextRunning;
+  byId("output-dir").disabled = nextRunning;
+  byId("select-output-dir").disabled = nextRunning;
+  byId("filename-template").disabled = nextRunning;
+  byId("overwrite-policy").disabled = nextRunning;
+}
+
+function updateSummaryCards() {
+  const queueSummary = summarizeQueue(queue);
+  byId("queue-total").textContent = String(queueSummary.total);
+  byId("queue-ready").textContent = String(queueSummary.ready);
+  byId("queue-done").textContent = String(queueSummary.done);
+  byId("queue-failed").textContent = String(queueSummary.failed);
+
+  byId("batch-progress").value = progressState.overallProgress;
+  byId("batch-progress-label").textContent = `${progressState.overallProgress.toFixed(1)}%`;
+  byId("batch-detail").textContent = progressState.currentFile
+    ? `${progressState.message || "Processing"}: ${progressState.currentFile}`
+    : progressState.message || "Queue idle";
+  byId("batch-stats").textContent = `${progressState.completed}/${progressState.total || queueSummary.total} finished · ${progressState.succeeded} done · ${progressState.failed} failed · ${progressState.skipped} skipped`;
+}
+
+function renderQueue() {
+  const queueEl = byId("queue-list");
+  const summary = summarizeQueue(queue);
+
+  if (queue.length === 0) {
+    queueEl.innerHTML = `<li class="queue-empty">Add files or a folder to build a conversion run.</li>`;
+  } else {
+    queueEl.innerHTML = queue
+      .map(
+        (entry) => `
+          <li class="queue-item" data-status="${entry.status}">
+            <div>
+              <strong>${entry.path.split(/[\\\\/]/).pop()}</strong>
+              <p>${entry.path}</p>
+            </div>
+            <div class="queue-meta">
+              <span class="pill">${entry.status}</span>
+              <span>${entry.message || entry.outputPath || ""}</span>
+            </div>
+          </li>`,
+      )
+      .join("");
+  }
+
+  byId("queue-caption").textContent = `${summary.total} files in queue`;
+  updateSummaryCards();
+  setRunningState(running);
+}
+
+function resetQueueStatuses() {
+  queue = queue.map((entry) => ({
+    ...entry,
+    status: "ready",
+    message: "",
+    outputPath: "",
+  }));
+}
+
+function upsertQueuePaths(paths) {
+  queue = mergeQueue(queue, paths);
+  renderQueue();
+}
+
+function updateQueueItem(payload) {
+  queue = queue.map((entry) =>
+    entry.path === payload.filePath
+      ? {
+          ...entry,
+          status: payload.status,
+          message: payload.message || "",
+          outputPath: payload.outputPath || "",
         }
-      }
-      const response = await invoke("get_audio_info", { filePath: selected });
-      if (response.success) {
-        const info = response.data;
-        document.querySelector("#audio-info").textContent = `Channels: ${info.channels}, Sample Rate: ${info.sample_rate} Hz, Bits: ${info.bits_per_sample}, Duration: ${info.duration_seconds != null ? info.duration_seconds.toFixed(2) + 's' : 'Unknown'}`;
-      } else {
-        document.querySelector("#audio-info").textContent = `Error reading audio info: ${response.error}`;
-      }
-      updateOutputPreview();
-    }
-   } catch (error) {
-     console.error('File selection error:', error);
-   }
+      : entry,
+  );
+  renderQueue();
+}
+
+async function addFiles() {
+  const selected = await window.__TAURI__.dialog.open({
+    multiple: true,
+    filters: [
+      {
+        name: "Audio Files",
+        extensions: ["wav", "mp3", "flac", "aac", "ogg", "m4a", "mp4", "aiff", "caf", "mkv"],
+      },
+    ],
+  });
+
+  if (!selected) {
+    return;
+  }
+
+  upsertQueuePaths(Array.isArray(selected) ? selected : [selected]);
+  setStatus("Files added to queue.");
+}
+
+async function addFolder() {
+  const selected = await window.__TAURI__.dialog.open({
+    directory: true,
+    multiple: false,
+  });
+
+  if (!selected || Array.isArray(selected)) {
+    return;
+  }
+
+  const files = await invoke("list_supported_audio_files", { folderPath: selected });
+  upsertQueuePaths(files);
+  setStatus(files.length ? `Added ${files.length} audio files from folder.` : "No supported audio files found in folder.", files.length ? "neutral" : "warning");
 }
 
 async function selectOutputDir() {
-  try {
-    const selected = await window.__TAURI__.dialog.open({
-      directory: true,
-      multiple: false,
-      defaultPath: outputDirEl.value || undefined,
-    });
-    if (selected) {
-      outputDirEl.value = selected;
-      updateOutputPreview();
-    }
-  } catch (error) {
-    console.error('Output directory selection error:', error);
-  }
-}
+  const selected = await window.__TAURI__.dialog.open({
+    directory: true,
+    multiple: false,
+    defaultPath: outputDirInput.value || undefined,
+  });
 
-function getSourceParts() {
-  const filePath = fileInputEl.value.trim();
-  if (!filePath) {
-    return null;
+  if (!selected || Array.isArray(selected)) {
+    return;
   }
 
-  const normalized = filePath.replace(/\\/g, "/");
-  const segments = normalized.split("/");
-  const filename = segments[segments.length - 1] || "";
-  const lastDot = filename.lastIndexOf(".");
-  const stem = lastDot > 0 ? filename.slice(0, lastDot) : filename;
-  const originalExt = lastDot > 0 ? filename.slice(lastDot + 1) : "";
-  const sourceDir = normalized.includes("/") ? normalized.slice(0, normalized.lastIndexOf("/")) : "";
-
-  return { stem, originalExt, sourceDir };
+  outputDirInput.value = selected;
 }
 
-function buildPreviewPath() {
-  const source = getSourceParts();
-  if (!source) {
-    return "";
+async function startBatch() {
+  if (queue.length === 0 || running) {
+    return;
   }
 
-  const rawTemplate = filenameTemplateEl.value.trim() || "{stem}_mono";
-  const renderedName = rawTemplate
-    .replaceAll("{stem}", source.stem)
-    .replaceAll("{original_ext}", source.originalExt)
-    .replaceAll("{ext}", "wav");
-  const filename = renderedName.toLowerCase().endsWith(".wav") ? renderedName : `${renderedName}.wav`;
-  const outputDir = outputDirEl.value.trim() || source.sourceDir;
-
-  if (!outputDir) {
-    return filename;
-  }
-
-  return `${outputDir.replace(/[\\/]+$/, "")}/${filename}`;
-}
-
-function updateOutputPreview() {
-  const preview = buildPreviewPath();
-  outputPreviewEl.textContent = preview ? `Output preview: ${preview}` : "";
-}
-
-async function convertToMono() {
-  convertMsgEl.textContent = "";
-  const selectFileButton = document.querySelector("#select-file");
-  const selectOutputDirButton = document.querySelector("#select-output-dir");
-  const convertButton = document.querySelector("#convert");
-  selectFileButton.disabled = true;
-  selectOutputDirButton.disabled = true;
-  convertButton.disabled = true;
+  resetQueueStatuses();
+  progressState = {
+    total: queue.length,
+    completed: 0,
+    succeeded: 0,
+    failed: 0,
+    skipped: 0,
+    cancelled: 0,
+    currentFile: null,
+    currentFileProgress: 0,
+    overallProgress: 0,
+    message: "Starting batch conversion",
+  };
+  renderQueue();
+  setRunningState(true);
+  setStatus("Batch conversion started.");
 
   try {
-    await invoke("convert_to_mono", {
-      request: {
-        filePath: fileInputEl.value,
-        outputDir: outputDirEl.value,
-        filenameTemplate: filenameTemplateEl.value,
-        overwritePolicy: overwritePolicyEl.value,
+    await invoke("start_batch_conversion", {
+      filePaths: queue.map((entry) => entry.path),
+      options: {
+        skipExistingOutputs: byId("skip-existing").checked,
+        stopOnError: byId("stop-on-error").checked,
+        outputDir: outputDirInput.value.trim(),
+        filenameTemplate: filenameTemplateInput.value.trim(),
+        overwritePolicy: overwritePolicyInput.value,
       },
     });
   } catch (error) {
-    convertMsgEl.textContent = `Error: ${error}`;
-    selectFileButton.disabled = false;
-    selectOutputDirButton.disabled = false;
-    convertButton.disabled = false;
+    setRunningState(false);
+    setStatus(`Unable to start batch: ${error}`, "error");
   }
 }
 
-window.addEventListener("DOMContentLoaded", () => {
-  fileInputEl = document.querySelector("#file-input");
-  outputDirEl = document.querySelector("#output-dir");
-  filenameTemplateEl = document.querySelector("#filename-template");
-  overwritePolicyEl = document.querySelector("#overwrite-policy");
-  convertMsgEl = document.querySelector("#convert-msg");
-  progressMsgEl = document.querySelector("#progress-msg");
-  outputPreviewEl = document.querySelector("#output-preview");
+async function cancelBatch() {
+  await invoke("cancel_conversion");
+  setStatus("Cancellation requested.", "warning");
+}
 
-  listen("progress", (event) => {
-    progressMsgEl.textContent = event.payload;
-    if (event.payload === "Starting conversion...") {
-      document.querySelector("#progress-container").style.display = "block";
-      document.querySelector("#cancel-btn").style.display = "inline-block";
-      document.querySelector("#progress-bar").value = 0;
-    } else if (event.payload.startsWith("Conversion complete")) {
-      document.querySelector("#progress-container").style.display = "none";
-      document.querySelector("#cancel-btn").style.display = "none";
-    } else if (event.payload.includes('%')) {
-      const percent = parseFloat(event.payload);
-      document.querySelector("#progress-bar").value = percent;
-    }
-  });
+window.addEventListener("DOMContentLoaded", async () => {
+  outputDirInput = byId("output-dir");
+  filenameTemplateInput = byId("filename-template");
+  overwritePolicyInput = byId("overwrite-policy");
+  renderQueue();
 
-  listen("conversion-result", (event) => {
-    if (event.payload.success) {
-      convertMsgEl.textContent = event.payload.message;
-    } else {
-      convertMsgEl.textContent = `Error: ${event.payload.error}`;
-    }
-    document.querySelector("#progress-container").style.display = "none";
-    document.querySelector("#cancel-btn").style.display = "none";
-    document.querySelector("#select-file").disabled = false;
-    document.querySelector("#select-output-dir").disabled = false;
-    document.querySelector("#convert").disabled = false;
-  });
+  await Promise.all([
+    listen("batch-item", (event) => {
+      updateQueueItem(event.payload);
+    }),
+    listen("batch-progress", (event) => {
+      progressState = event.payload;
+      updateSummaryCards();
+    }),
+    listen("batch-finished", (event) => {
+      progressState = event.payload;
+      setRunningState(false);
+      updateSummaryCards();
 
-  document.querySelector("#select-file").addEventListener("click", selectFile);
-  document.querySelector("#select-output-dir").addEventListener("click", selectOutputDir);
-  document.querySelector("#convert-form").addEventListener("submit", (e) => {
-    e.preventDefault();
-    convertToMono();
+      const tone = event.payload.failed > 0 ? "warning" : event.payload.cancelled > 0 ? "warning" : "success";
+      setStatus(event.payload.message || "Batch finished.", tone);
+    }),
+  ]);
+
+  byId("add-files").addEventListener("click", () => {
+    addFiles().catch((error) => setStatus(`File picker failed: ${error}`, "error"));
   });
-  document.querySelector("#cancel-btn").addEventListener("click", () => {
-    invoke("cancel_conversion");
+  byId("add-folder").addEventListener("click", () => {
+    addFolder().catch((error) => setStatus(`Folder scan failed: ${error}`, "error"));
   });
-  fileInputEl.addEventListener("input", updateOutputPreview);
-  outputDirEl.addEventListener("input", updateOutputPreview);
-  filenameTemplateEl.addEventListener("input", updateOutputPreview);
+  byId("select-output-dir").addEventListener("click", () => {
+    selectOutputDir().catch((error) => setStatus(`Output directory selection failed: ${error}`, "error"));
+  });
+  byId("clear-queue").addEventListener("click", () => {
+    queue = [];
+    progressState = {
+      total: 0,
+      completed: 0,
+      succeeded: 0,
+      failed: 0,
+      skipped: 0,
+      cancelled: 0,
+      currentFile: null,
+      currentFileProgress: 0,
+      overallProgress: 0,
+      message: "Queue cleared",
+    };
+    renderQueue();
+    setStatus("Queue cleared.");
+  });
+  byId("start-batch").addEventListener("click", () => {
+    startBatch();
+  });
+  byId("cancel-batch").addEventListener("click", () => {
+    cancelBatch().catch((error) => setStatus(`Cancel failed: ${error}`, "error"));
+  });
 });

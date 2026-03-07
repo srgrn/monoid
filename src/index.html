@@ -4,62 +4,95 @@
     <meta charset="UTF-8" />
     <link rel="stylesheet" href="styles.css" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Tauri App</title>
+    <title>Monoid Batch Converter</title>
     <script type="module" src="/main.js" defer></script>
   </head>
-
   <body>
-    <main class="container">
-      <section class="panel">
-        <h1>Audio to Mono Converter</h1>
-        <p class="subtitle">Choose where the mono WAV lands and how it should be named.</p>
+    <main class="shell">
+      <section class="hero">
+        <p class="eyebrow">Monoid</p>
+        <h1>Batch audio conversion built for long runs.</h1>
+        <p class="lede">
+          Queue files, sweep a folder, skip already-converted outputs, and keep going when a few files misbehave.
+        </p>
+      </section>
 
-        <form id="convert-form">
-          <div class="field-group">
-            <label for="file-input">Source file</label>
-            <div class="inline-field">
-              <input id="file-input" type="text" placeholder="Select an audio file..." />
-              <button type="button" id="select-file">Select File</button>
-            </div>
-          </div>
-
-          <div class="field-group">
-            <label for="output-dir">Output folder</label>
-            <div class="inline-field">
-              <input id="output-dir" type="text" placeholder="Defaults to the source folder" />
-              <button type="button" id="select-output-dir">Choose Folder</button>
-            </div>
-          </div>
-
-          <div class="field-grid">
-            <div class="field-group">
-              <label for="filename-template">Filename template</label>
-              <input id="filename-template" type="text" value="{stem}_mono" />
-              <p class="hint">Use <code>{stem}</code>, <code>{original_ext}</code>, and <code>{ext}</code>.</p>
-            </div>
-
-            <div class="field-group">
-              <label for="overwrite-policy">Overwrite policy</label>
-              <select id="overwrite-policy">
-                <option value="forbid" selected>Fail if the file exists</option>
-                <option value="overwrite">Overwrite existing file</option>
-              </select>
-            </div>
-          </div>
-
-          <div class="actions">
-            <button type="submit" id="convert">Convert to Mono</button>
-            <button type="button" id="cancel-btn" style="display: none;">Cancel</button>
-          </div>
-        </form>
-
-        <div id="audio-info"></div>
-        <p id="output-preview" class="hint"></p>
-        <p id="convert-msg"></p>
-        <div id="progress-container" style="display: none;">
-          <progress id="progress-bar" max="100"></progress>
-          <p id="progress-msg"></p>
+      <section class="panel controls">
+        <div class="actions">
+          <button type="button" id="add-files">Add Files</button>
+          <button type="button" id="add-folder">Add Folder</button>
+          <button type="button" id="clear-queue">Clear Queue</button>
         </div>
+        <div class="output-controls">
+          <label class="field">
+            <span>Output Folder</span>
+            <div class="field-inline">
+              <input type="text" id="output-dir" placeholder="Same folder as source files" />
+              <button type="button" id="select-output-dir">Browse</button>
+            </div>
+          </label>
+          <label class="field">
+            <span>Filename Template</span>
+            <input type="text" id="filename-template" value="{stem}_mono" />
+            <small>Use <code>{stem}</code>, <code>{original_ext}</code>, and <code>{ext}</code>.</small>
+          </label>
+          <label class="field field-compact">
+            <span>Overwrite Policy</span>
+            <select id="overwrite-policy">
+              <option value="forbid" selected>Fail if output exists</option>
+              <option value="overwrite">Overwrite existing output</option>
+            </select>
+          </label>
+        </div>
+        <div class="toggles">
+          <label><input type="checkbox" id="skip-existing" checked /> Skip existing `_mono.wav` outputs</label>
+          <label><input type="checkbox" id="stop-on-error" /> Stop on first error</label>
+        </div>
+        <div class="runbar">
+          <button type="button" id="start-batch">Start Batch</button>
+          <button type="button" id="cancel-batch" disabled>Cancel</button>
+          <p id="batch-status" data-tone="neutral">Queue idle.</p>
+        </div>
+      </section>
+
+      <section class="dashboard">
+        <article class="panel summary">
+          <div class="metric-grid">
+            <div class="metric">
+              <span>Total</span>
+              <strong id="queue-total">0</strong>
+            </div>
+            <div class="metric">
+              <span>Ready</span>
+              <strong id="queue-ready">0</strong>
+            </div>
+            <div class="metric">
+              <span>Done</span>
+              <strong id="queue-done">0</strong>
+            </div>
+            <div class="metric">
+              <span>Failed</span>
+              <strong id="queue-failed">0</strong>
+            </div>
+          </div>
+          <div class="progress-block">
+            <div class="progress-labels">
+              <span>Batch progress</span>
+              <strong id="batch-progress-label">0.0%</strong>
+            </div>
+            <progress id="batch-progress" max="100" value="0"></progress>
+            <p id="batch-detail">Queue idle</p>
+            <p id="batch-stats">0/0 finished</p>
+          </div>
+        </article>
+
+        <article class="panel queue-panel">
+          <div class="queue-header">
+            <h2>Queue</h2>
+            <p id="queue-caption">0 files in queue</p>
+          </div>
+          <ol id="queue-list" class="queue-list"></ol>
+        </article>
       </section>
     </main>
   </body>

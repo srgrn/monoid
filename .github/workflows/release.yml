@@ -1,70 +1,137 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - 'v*'
+  workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
-  build-macos:
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '18'
-      - run: npm install
-      - run: npm run tauri build
-      - uses: actions/upload-artifact@v4
-        with:
-          name: monoid-macos
-          path: src-tauri/target/release/bundle/dmg/Monoid_0.1.0_aarch64.dmg
-
-  build-windows:
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '18'
-      - run: npm install
-      - run: npm run tauri build
-      - uses: actions/upload-artifact@v4
-        with:
-          name: monoid-windows
-          path: src-tauri/target/release/bundle/msi/Monoid_0.1.0_x64_en-US.msi
-
-  build-linux:
+  prepare:
+    name: Create release tag
     runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      version: ${{ steps.version.outputs.version }}
+      sha: ${{ github.sha }}
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/setup-node@v4
+      - name: Check out repository
+        uses: actions/checkout@v4
         with:
-          node-version: '18'
-      - run: |
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Read app version
+        id: version
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          TAG="v${VERSION}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Fail if tag already exists
+        run: |
+          if git rev-parse "${{ steps.version.outputs.tag }}" >/dev/null 2>&1; then
+            echo "Tag ${{ steps.version.outputs.tag }} already exists." >&2
+            exit 1
+          fi
+
+      - name: Create and push tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "${{ steps.version.outputs.tag }}" -m "Release ${{ steps.version.outputs.tag }}" "${GITHUB_SHA}"
+          git push origin "${{ steps.version.outputs.tag }}"
+
+  build:
+    name: Build (${{ matrix.name }})
+    needs: prepare
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux
+            os: ubuntu-latest
+          - name: windows
+            os: windows-latest
+          - name: macos
+            os: macos-latest
+
+    steps:
+      - name: Check out tagged release
+        uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ needs.prepare.outputs.tag }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
-      - run: npm install
-      - run: npm run tauri build
-      - uses: actions/upload-artifact@v4
-        with:
-          name: monoid-linux
-          path: src-tauri/target/release/bundle/appimage/Monoid_0.1.0_amd64.AppImage
 
-  release:
-    needs: [build-macos, build-windows, build-linux]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/download-artifact@v4
-      - uses: softprops/action-gh-release@v2
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Run JavaScript tests
+        run: npm test
+
+      - name: Run Rust tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
+      - name: Build release bundles
+        run: npm exec tauri build
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
         with:
-          files: |
-            monoid-macos/Monoid_0.1.0_aarch64.dmg
-            monoid-windows/Monoid_0.1.0_x64_en-US.msi
-            monoid-linux/Monoid_0.1.0_amd64.AppImage
+          name: monoid-${{ matrix.name }}
+          if-no-files-found: error
+          path: |
+            src-tauri/target/release/bundle/**/*.AppImage
+            src-tauri/target/release/bundle/**/*.deb
+            src-tauri/target/release/bundle/**/*.rpm
+            src-tauri/target/release/bundle/**/*.dmg
+            src-tauri/target/release/bundle/**/*.app.tar.gz
+            src-tauri/target/release/bundle/**/*.msi
+            src-tauri/target/release/bundle/**/*setup.exe
+
+  publish:
+    name: Publish GitHub release
+    needs:
+      - prepare
+      - build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+          merge-multiple: true
+
+      - name: List release files
+        run: find release-artifacts -type f | sort
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.prepare.outputs.tag }}
+          name: Monoid ${{ needs.prepare.outputs.version }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: release-artifacts/**/*

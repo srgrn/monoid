@@ -11,10 +11,10 @@
     "windows": [
       {
         "title": "Monoid",
-        "width": 1320,
-        "height": 940,
-        "minWidth": 1100,
-        "minHeight": 820,
+        "width": 1220,
+        "height": 840,
+        "minWidth": 1080,
+        "minHeight": 760,
         "center": true
       }
     ],

@@ -59,8 +59,8 @@ async function autofitWindowToContent() {
     parseFloat(bodyStyles.paddingTop || "0") +
     parseFloat(bodyStyles.paddingBottom || "0");
 
-  const targetWidth = Math.max(1100, Math.ceil(shell.scrollWidth + horizontalPadding + 48));
-  const targetHeight = Math.max(820, Math.ceil(shell.scrollHeight + verticalPadding + 72));
+  const targetWidth = Math.max(1080, Math.ceil(shell.scrollWidth + horizontalPadding + 40));
+  const targetHeight = Math.max(760, Math.ceil(shell.scrollHeight + verticalPadding + 40));
 
   try {
     await appWindow.setSize(new LogicalSize(targetWidth, targetHeight));

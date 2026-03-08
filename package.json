@@ -1,7 +1,7 @@
 {
   "name": "Monoid",
   "private": true,
-  "version": "0.1.2.2",
+  "version": "0.1.2-1",
   "type": "module",
   "scripts": {
     "test": "node --test src/*.test.js",

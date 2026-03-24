@@ -72,6 +72,13 @@ body {
   text-transform: uppercase;
 }
 
+.brand-version {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-tertiary);
+  font-weight: 400;
+}
+
 .topbar-actions {
   display: flex;
   align-items: center;

@@ -342,6 +342,14 @@ window.addEventListener("DOMContentLoaded", async () => {
   await autofitWindowToContent();
   setupUpdater();
 
+  // Show app version in topbar
+  const getVersion = window.__TAURI__.app?.getVersion;
+  if (getVersion) {
+    try {
+      byId("app-version").textContent = `v${await getVersion()}`;
+    } catch {}
+  }
+
   await Promise.all([
     listen("batch-item", (event) => {
       updateQueueItem(event.payload);

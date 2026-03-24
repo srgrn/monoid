@@ -70,6 +70,8 @@ async function autofitWindowToContent() {
   }
 }
 
+/* ── UI helpers ── */
+
 function setStatus(message, tone = "neutral") {
   const statusEl = byId("batch-status");
   statusEl.textContent = message;
@@ -78,10 +80,12 @@ function setStatus(message, tone = "neutral") {
 
 function setRunningState(nextRunning) {
   running = nextRunning;
+  const hasFiles = queue.length > 0;
+
   byId("add-files").disabled = nextRunning;
   byId("add-folder").disabled = nextRunning;
-  byId("clear-queue").disabled = nextRunning || queue.length === 0;
-  byId("start-batch").disabled = nextRunning || queue.length === 0;
+  byId("clear-queue").disabled = nextRunning || !hasFiles;
+  byId("start-batch").disabled = nextRunning || !hasFiles;
   byId("cancel-batch").disabled = !nextRunning;
   byId("skip-existing").disabled = nextRunning;
   byId("stop-on-error").disabled = nextRunning;
@@ -93,44 +97,71 @@ function setRunningState(nextRunning) {
 
 function updateSummaryCards() {
   const queueSummary = summarizeQueue(queue);
-  byId("queue-total").textContent = String(queueSummary.total);
-  byId("queue-ready").textContent = String(queueSummary.ready);
+
+  // Metric chips in action bar
   byId("queue-done").textContent = String(queueSummary.done);
   byId("queue-failed").textContent = String(queueSummary.failed);
+  byId("queue-ready").textContent = String(queueSummary.ready);
 
-  byId("batch-progress").value = progressState.overallProgress;
-  byId("batch-progress-label").textContent = `${progressState.overallProgress.toFixed(1)}%`;
-  byId("batch-detail").textContent = progressState.currentFile
-    ? `${progressState.message || "Processing"}: ${progressState.currentFile}`
-    : progressState.message || "Queue idle";
-  byId("batch-stats").textContent = `${progressState.completed}/${progressState.total || queueSummary.total} finished · ${progressState.succeeded} done · ${progressState.failed} failed · ${progressState.skipped} skipped`;
+  // Hidden compat elements
+  byId("queue-total").textContent = String(queueSummary.total);
+
+  // Show metrics when there's something to show
+  const metricsEl = byId("action-metrics");
+  metricsEl.hidden = queueSummary.total === 0;
+
+  // Progress footer
+  const progressFooter = byId("progress-footer");
+  const showProgress = running || progressState.completed > 0;
+  progressFooter.hidden = !showProgress;
+
+  if (showProgress) {
+    byId("progress-fill").style.width = `${progressState.overallProgress}%`;
+    byId("batch-progress").value = progressState.overallProgress;
+    byId("batch-progress-label").textContent = `${progressState.overallProgress.toFixed(1)}%`;
+
+    byId("batch-detail").textContent = progressState.currentFile
+      ? `${progressState.message || "Processing"}: ${progressState.currentFile}`
+      : progressState.message || "Idle";
+
+    byId("batch-stats").textContent = `${progressState.completed}/${progressState.total || queueSummary.total}`;
+  }
+}
+
+function updateQueueVisibility() {
+  const hasFiles = queue.length > 0;
+  byId("dropzone").hidden = hasFiles;
+  byId("queue-container").hidden = !hasFiles;
 }
 
 function renderQueue() {
   const queueEl = byId("queue-list");
   const summary = summarizeQueue(queue);
 
+  updateQueueVisibility();
+
   if (queue.length === 0) {
-    queueEl.innerHTML = `<li class="queue-empty">Add files or a folder to build a conversion run.</li>`;
+    queueEl.innerHTML = "";
   } else {
     queueEl.innerHTML = queue
-      .map(
-        (entry) => `
+      .map((entry) => {
+        const filename = entry.path.split(/[\\\\/]/).pop();
+        const dir = entry.path.slice(0, entry.path.length - filename.length - 1);
+        const meta = entry.message || entry.outputPath || entry.status;
+        return `
           <li class="queue-item" data-status="${entry.status}">
-            <div>
-              <strong>${entry.path.split(/[\\\\/]/).pop()}</strong>
-              <p>${entry.path}</p>
+            <span class="queue-item-indicator"></span>
+            <div class="queue-item-body">
+              <div class="queue-item-name">${filename}</div>
+              <div class="queue-item-path">${dir}</div>
             </div>
-            <div class="queue-meta">
-              <span class="pill">${entry.status}</span>
-              <span>${entry.message || entry.outputPath || ""}</span>
-            </div>
-          </li>`,
-      )
+            <span class="queue-item-meta">${meta}</span>
+          </li>`;
+      })
       .join("");
   }
 
-  byId("queue-caption").textContent = `${summary.total} files in queue`;
+  byId("queue-caption").textContent = `${summary.total} file${summary.total !== 1 ? "s" : ""}`;
   updateSummaryCards();
   setRunningState(running);
 }
@@ -163,6 +194,8 @@ function updateQueueItem(payload) {
   renderQueue();
 }
 
+/* ── Actions ── */
+
 async function addFiles() {
   const selected = await window.__TAURI__.dialog.open({
     multiple: true,
@@ -179,7 +212,7 @@ async function addFiles() {
   }
 
   upsertQueuePaths(Array.isArray(selected) ? selected : [selected]);
-  setStatus("Files added to queue.");
+  setStatus("Files added.", "neutral");
 }
 
 async function addFolder() {
@@ -194,7 +227,7 @@ async function addFolder() {
 
   const files = await invoke("list_supported_audio_files", { folderPath: selected });
   upsertQueuePaths(files);
-  setStatus(files.length ? `Added ${files.length} audio files from folder.` : "No supported audio files found in folder.", files.length ? "neutral" : "warning");
+  setStatus(files.length ? `Added ${files.length} files.` : "No audio files found.", files.length ? "neutral" : "warning");
 }
 
 async function selectOutputDir() {
@@ -231,7 +264,7 @@ async function startBatch() {
   };
   renderQueue();
   setRunningState(true);
-  setStatus("Batch conversion started.");
+  setStatus("Converting...");
 
   try {
     await invoke("start_batch_conversion", {
@@ -246,20 +279,65 @@ async function startBatch() {
     });
   } catch (error) {
     setRunningState(false);
-    setStatus(`Unable to start batch: ${error}`, "error");
+    setStatus(`Error: ${error}`, "error");
   }
 }
 
 async function cancelBatch() {
   await invoke("cancel_conversion");
-  setStatus("Cancellation requested.", "warning");
+  setStatus("Cancelling...", "warning");
 }
+
+/* ── Drag and drop ── */
+
+async function setupDragAndDrop() {
+  const dropzone = byId("dropzone");
+
+  // Tauri v2 intercepts file drops at the webview level,
+  // so we use the native onDragDropEvent API instead of browser drag events.
+  const getCurrentWebview = window.__TAURI__.webview?.getCurrentWebview;
+  if (!getCurrentWebview) return;
+
+  await getCurrentWebview().onDragDropEvent((event) => {
+    if (event.payload.type === "over") {
+      dropzone.classList.add("drag-over");
+    } else if (event.payload.type === "drop") {
+      dropzone.classList.remove("drag-over");
+      const paths = event.payload.paths || [];
+      if (paths.length > 0) {
+        upsertQueuePaths(paths);
+        setStatus(`Added ${paths.length} file${paths.length !== 1 ? "s" : ""}.`);
+      }
+    } else {
+      // cancelled
+      dropzone.classList.remove("drag-over");
+    }
+  });
+}
+
+/* ── Settings toggle ── */
+
+function setupSettingsToggle() {
+  const btn = byId("toggle-settings");
+  const panel = byId("settings-panel");
+
+  btn.addEventListener("click", () => {
+    const isHidden = panel.hidden;
+    panel.hidden = !isHidden;
+    btn.classList.toggle("active", isHidden);
+  });
+}
+
+/* ── Init ── */
 
 window.addEventListener("DOMContentLoaded", async () => {
   outputDirInput = byId("output-dir");
   filenameTemplateInput = byId("filename-template");
   overwritePolicyInput = byId("overwrite-policy");
+
   renderQueue();
+  setupDragAndDrop();
+  setupSettingsToggle();
   await autofitWindowToContent();
 
   await Promise.all([
@@ -304,7 +382,7 @@ window.addEventListener("DOMContentLoaded", async () => {
       message: "Queue cleared",
     };
     renderQueue();
-    setStatus("Queue cleared.");
+    setStatus("Ready");
   });
   byId("start-batch").addEventListener("click", () => {
     startBatch();

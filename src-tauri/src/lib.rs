@@ -1,6 +1,8 @@
+use std::collections::HashSet;
 use std::fs::{self, File};
-use std::io::{Read, Seek};
+use std::io::{BufWriter, Read, Seek};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde::Deserialize;
@@ -22,7 +24,7 @@ struct AppState(Arc<Mutex<ConversionState>>);
 
 struct ProgressReader<R: Read + Seek + Send + Sync> {
     inner: R,
-    bytes_read: Arc<Mutex<u64>>,
+    bytes_read: Arc<AtomicU64>,
     total_size: u64,
 }
 
@@ -30,7 +32,7 @@ impl<R: Read + Seek + Send + Sync> Read for ProgressReader<R> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         let result = self.inner.read(buf);
         if let Ok(bytes) = result {
-            *self.bytes_read.lock().unwrap() += bytes as u64;
+            self.bytes_read.fetch_add(bytes as u64, Ordering::Relaxed);
         }
         result
     }
@@ -80,17 +82,12 @@ struct BatchConversionOptions {
     overwrite_policy: Option<OverwritePolicy>,
 }
 
-#[derive(Clone, Copy, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Default, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 enum OverwritePolicy {
+    #[default]
     Forbid,
     Overwrite,
-}
-
-impl Default for OverwritePolicy {
-    fn default() -> Self {
-        Self::Forbid
-    }
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -399,7 +396,7 @@ fn convert_file_to_mono(
         .metadata()
         .map_err(|err| format!("Failed to get file metadata: {err}"))?
         .len();
-    let bytes_read = Arc::new(Mutex::new(0u64));
+    let bytes_read = Arc::new(AtomicU64::new(0));
     let progress_reader = ProgressReader {
         inner: input,
         bytes_read: bytes_read.clone(),
@@ -431,8 +428,10 @@ fn convert_file_to_mono(
         .make(&track.codec_params, &DecoderOptions::default())
         .map_err(|err| format!("Unsupported codec: {err}"))?;
 
-    let mut writer = hound::WavWriter::create(
-        output_path,
+    let wav_file = File::create(output_path)
+        .map_err(|err| format!("Failed to create WAV file: {err}"))?;
+    let mut writer = hound::WavWriter::new(
+        BufWriter::new(wav_file),
         hound::WavSpec {
             channels: 1,
             sample_rate,
@@ -440,10 +439,15 @@ fn convert_file_to_mono(
             sample_format: hound::SampleFormat::Int,
         },
     )
-    .map_err(|err| format!("Failed to create WAV file: {err}"))?;
+    .map_err(|err| format!("Failed to create WAV writer: {err}"))?;
 
     let mut last_reported_progress = -1.0f64;
     on_progress(0.0);
+
+    // Reuse sample buffer across packets to avoid per-packet allocation
+    let mut sample_buffer: Option<SampleBuffer<f32>> = None;
+    // Batch mono samples before writing
+    let mut mono_batch: Vec<i16> = Vec::with_capacity(8192);
 
     loop {
         if current_cancel_requested(state) {
@@ -466,21 +470,36 @@ fn convert_file_to_mono(
             .map_err(|err| format!("Decode error: {err}"))?;
         let spec = *decoded.spec();
         let channels = spec.channels.count();
-        let mut sample_buffer = SampleBuffer::<f32>::new(decoded.capacity() as u64, spec);
-        sample_buffer.copy_interleaved_ref(decoded);
 
-        for frame in sample_buffer.samples().chunks(channels) {
+        // Reuse or create sample buffer with sufficient capacity
+        let buf = sample_buffer.get_or_insert_with(|| {
+            SampleBuffer::<f32>::new(decoded.capacity() as u64, spec)
+        });
+        if buf.capacity() < decoded.capacity() {
+            *buf = SampleBuffer::<f32>::new(decoded.capacity() as u64, spec);
+        }
+        buf.copy_interleaved_ref(decoded);
+
+        // Convert to mono in batch
+        mono_batch.clear();
+        let inv_channels = 1.0 / channels as f32;
+        for frame in buf.samples().chunks(channels) {
             let sum: f32 = frame.iter().copied().sum();
-            let mono = (sum / channels as f32).clamp(-1.0, 1.0);
+            let mono = (sum * inv_channels).clamp(-1.0, 1.0);
+            mono_batch.push(normalized_f32_to_i16(mono));
+        }
+
+        // Write batch
+        for &sample in &mono_batch {
             writer
-                .write_sample(normalized_f32_to_i16(mono))
+                .write_sample(sample)
                 .map_err(|_| "Write error".to_string())?;
         }
 
         let progress = if total_size == 0 {
             100.0
         } else {
-            (*bytes_read.lock().unwrap() as f64 / total_size as f64 * 100.0).clamp(0.0, 100.0)
+            (bytes_read.load(Ordering::Relaxed) as f64 / total_size as f64 * 100.0).clamp(0.0, 100.0)
         };
         if (progress - last_reported_progress).abs() >= 1.0 {
             on_progress(progress);
@@ -496,9 +515,10 @@ fn convert_file_to_mono(
 }
 
 fn unique_paths(file_paths: Vec<String>) -> Vec<String> {
-    let mut unique = Vec::new();
+    let mut seen = HashSet::with_capacity(file_paths.len());
+    let mut unique = Vec::with_capacity(file_paths.len());
     for file_path in file_paths {
-        if file_path.trim().is_empty() || unique.iter().any(|existing| existing == &file_path) {
+        if file_path.trim().is_empty() || !seen.insert(file_path.clone()) {
             continue;
         }
         unique.push(file_path);

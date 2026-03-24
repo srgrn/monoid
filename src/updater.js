@@ -148,4 +148,10 @@ export function setupUpdater() {
   setTimeout(() => {
     if (!dismissed) checkForUpdates(toast, true);
   }, 3000);
+
+  // Listen for "Check for Updates..." menu item
+  const listen = window.__TAURI__.event?.listen;
+  if (listen) {
+    listen("check-for-updates", () => checkForUpdates(toast, false));
+  }
 }

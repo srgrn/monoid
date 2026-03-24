@@ -156,6 +156,15 @@ jobs:
           node -e "const fs=require('fs'); const p=JSON.parse(fs.readFileSync('src-tauri/tauri.conf.json')); p.version=process.argv[1]; fs.writeFileSync('src-tauri/tauri.conf.json',JSON.stringify(p,null,2)+'\n')" "$VERSION"
           sed -i'' -e "s/^version = \".*\"/version = \"$VERSION\"/" src-tauri/Cargo.toml
 
+      - name: Enable macOS infoPlist config
+        run: |
+          node -e "
+            const fs = require('fs');
+            const c = JSON.parse(fs.readFileSync('src-tauri/tauri.conf.json'));
+            c.bundle.macOS = { infoPlist: './Info.plist' };
+            fs.writeFileSync('src-tauri/tauri.conf.json', JSON.stringify(c, null, 2) + '\n');
+          "
+
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
@@ -179,7 +188,7 @@ jobs:
       - name: Build, sign, and notarize macOS bundles
         uses: tauri-apps/tauri-action@v0
         with:
-          tauriScript: npm exec tauri --
+          tauriScript: npx tauri
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}

@@ -23,6 +23,7 @@
     }
   },
   "bundle": {
+    "createUpdaterArtifacts": true,
     "active": true,
     "targets": "all",
     "icon": [
@@ -32,5 +33,13 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDZBNzJGNTA5NDI2QjM3OUUKUldTZU4ydENDZlZ5YWdTdFg3ZzdWRHJPZ3gyYXF5b2lnVERSQjk3bGxKWGI3V3pLZjAxYUxETmUK",
+      "endpoints": [
+        "https://github.com/srgrn/monoid/releases/latest/download/latest.json"
+      ]
+    }
   }
 }

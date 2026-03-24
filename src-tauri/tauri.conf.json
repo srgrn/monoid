@@ -36,7 +36,9 @@
     "resources": {
       "icons/Assets.car": "Assets.car"
     },
-    "macOS": {}
+    "macOS": {
+      "infoPlist": "./Info.plist"
+    }
   },
   "plugins": {
     "updater": {

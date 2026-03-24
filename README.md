@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="src-tauri/icons/128x128@2x.png" alt="Monoid app icon" width="96" />
+
 # Monoid
 
 **Batch stereo-to-mono audio converter**

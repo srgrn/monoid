@@ -290,43 +290,27 @@ async function cancelBatch() {
 
 /* ── Drag and drop ── */
 
-function setupDragAndDrop() {
+async function setupDragAndDrop() {
   const dropzone = byId("dropzone");
-  const shell = document.querySelector(".shell");
 
-  // Prevent default drag behavior on the entire window
-  for (const event of ["dragenter", "dragover", "dragleave", "drop"]) {
-    document.addEventListener(event, (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-    });
-  }
+  // Tauri v2 intercepts file drops at the webview level,
+  // so we use the native onDragDropEvent API instead of browser drag events.
+  const getCurrentWebview = window.__TAURI__.webview?.getCurrentWebview;
+  if (!getCurrentWebview) return;
 
-  // Visual feedback on the dropzone
-  document.addEventListener("dragenter", () => {
-    dropzone.classList.add("drag-over");
-  });
-
-  document.addEventListener("dragleave", (e) => {
-    if (!e.relatedTarget || !shell.contains(e.relatedTarget)) {
+  await getCurrentWebview().onDragDropEvent((event) => {
+    if (event.payload.type === "over") {
+      dropzone.classList.add("drag-over");
+    } else if (event.payload.type === "drop") {
       dropzone.classList.remove("drag-over");
-    }
-  });
-
-  document.addEventListener("drop", async (e) => {
-    dropzone.classList.remove("drag-over");
-
-    const files = e.dataTransfer?.files;
-    if (!files || files.length === 0) return;
-
-    const paths = [];
-    for (const file of files) {
-      if (file.path) paths.push(file.path);
-    }
-
-    if (paths.length > 0) {
-      upsertQueuePaths(paths);
-      setStatus(`Added ${paths.length} file${paths.length !== 1 ? "s" : ""}.`);
+      const paths = event.payload.paths || [];
+      if (paths.length > 0) {
+        upsertQueuePaths(paths);
+        setStatus(`Added ${paths.length} file${paths.length !== 1 ? "s" : ""}.`);
+      }
+    } else {
+      // cancelled
+      dropzone.classList.remove("drag-over");
     }
   });
 }

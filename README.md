@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="src-tauri/icons/128x128@2x.png" alt="Monoid app icon" width="96" />
+<img src="src/assets/logo.svg" alt="Monoid logo" width="64" />
 
 # Monoid
 

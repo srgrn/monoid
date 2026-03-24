@@ -1,75 +1,61 @@
+<div align="center">
+
 # Monoid
 
-Monoid is a desktop audio utility for turning stereo source files into mono WAV outputs.
-It is built with Tauri, a small vanilla JavaScript frontend, and a Rust audio pipeline based on Symphonia.
+**Batch stereo-to-mono audio converter**
 
-## What It Does
+[![Release](https://img.shields.io/github/v/release/srgrn/monoid?style=flat-square&color=5de4c7)](https://github.com/srgrn/monoid/releases/latest)
+[![CI](https://img.shields.io/github/actions/workflow/status/srgrn/monoid/pr-tests.yml?style=flat-square&label=tests)](https://github.com/srgrn/monoid/actions)
+[![Platform](https://img.shields.io/badge/platform-macOS%20%C2%B7%20Linux%20%C2%B7%20Windows-8b919a?style=flat-square)](#)
+[![Built with Tauri](https://img.shields.io/badge/built%20with-Tauri%20v2-24c8db?style=flat-square&logo=tauri&logoColor=white)](https://v2.tauri.app)
+[![License](https://img.shields.io/github/license/srgrn/monoid?style=flat-square&color=8b919a)](LICENSE)
 
-Monoid is aimed at the common "make this usable mono audio" workflow:
+Drop audio files in, get mono WAV files out.
 
-- add individual audio files or scan a folder recursively
-- queue multiple files in one run
-- convert each source into a mono `.wav`
-- choose where outputs are written
-- control output naming with a filename template
-- decide whether existing outputs should be skipped or overwritten
-- keep running through bad files or stop on the first failure
+<br />
 
-The app shows per-file status, overall progress, and batch completion results while the conversion is running.
+<img src="screenshots/Screenshot1.png" alt="Empty state with drag-and-drop zone" width="720" />
 
-## Supported Inputs
+</div>
 
-Monoid accepts a range of common audio container and codec combinations that Symphonia can decode in this project, including:
+<br />
 
-- `wav`
-- `mp3`
-- `flac`
-- `aac`
-- `ogg`
-- `m4a`
-- `mp4`
-- `aiff`
-- `caf`
-- `mkv`
+## Screenshots
 
-Outputs are currently written as mono 16-bit WAV files.
+| Queue ready | Converting | Complete |
+|:-----------:|:----------:|:--------:|
+| <img src="screenshots/Screenshot2.png" alt="File queued and ready" width="280" /> | <img src="screenshots/Screenshot3.png" alt="Conversion in progress" width="280" /> | <img src="screenshots/Screenshot4.png" alt="Batch complete" width="280" /> |
+
+## Features
+
+- Drag-and-drop files or scan a folder recursively
+- Batch queue with per-file status tracking
+- Configurable output folder, filename template, and overwrite policy
+- Skip existing outputs or stop on first error
+- Real-time progress with batch completion summary
+- Cross-platform: macOS (signed & notarized), Linux, Windows
+
+## Supported Formats
+
+**Input:** `wav` `mp3` `flac` `aac` `ogg` `m4a` `mp4` `aiff` `caf` `mkv`
+&nbsp;&middot;&nbsp; **Output:** mono 16-bit WAV
+
+Audio decoding is powered by [Symphonia](https://github.com/pdeljanov/Symphonia).
 
 ## How Conversion Works
 
-For each decoded frame, Monoid averages the available channels into a mono sample, normalizes the result safely, and writes a WAV output. The current implementation is designed for straightforward mono conversion rather than mastering-grade mix decisions.
+For each decoded frame, Monoid averages all channels into a mono sample, normalizes safely, and writes a WAV output. Designed for straightforward mono conversion rather than mastering-grade mix decisions.
 
-By default, outputs use the source filename stem with a `_mono.wav` suffix, but this can be changed with the filename template field in the app.
+By default, outputs use the pattern `{stem}_mono.wav`, configurable via the filename template field.
 
 ## Development
 
-Install dependencies:
-
 ```bash
-npm ci
-```
-
-Run the frontend tests:
-
-```bash
-npm test
-```
-
-Run the Rust tests:
-
-```bash
-cargo test --manifest-path src-tauri/Cargo.toml
-```
-
-Run the desktop app in development:
-
-```bash
-npm exec tauri dev
-```
-
-Build production bundles for the current platform:
-
-```bash
-npm exec tauri build
+npm ci                                        # install dependencies
+npm test                                      # run frontend tests
+cargo test --manifest-path src-tauri/Cargo.toml  # run Rust tests
+npm exec tauri dev                            # run in development
+npm exec tauri build                          # build for current platform
 ```
 
 Cross-build the Windows installer from Linux:
@@ -82,15 +68,15 @@ npm exec tauri build -- --target x86_64-pc-windows-gnu
 
 GitHub Actions is configured to:
 
-- run JavaScript and Rust tests on every pull request
-- create a tagged release from the current version when the release workflow is triggered manually
-- build release bundles for Linux, Windows, and macOS
-- sign and notarize the macOS build via Apple's notarization service
-- publish a GitHub release and attach the generated artifacts
+- Run JavaScript and Rust tests on every pull request
+- Create a tagged release from the current version when triggered manually
+- Build release bundles for Linux, Windows, and macOS
+- Sign and notarize the macOS build via Apple's notarization service
+- Publish a GitHub release with all artifacts attached
 
 ### macOS Code Signing & Notarization
 
-The macOS build is automatically signed and notarized using `tauri-apps/tauri-action`. The following GitHub Secrets must be configured in the repository:
+The macOS build is automatically signed and notarized using `tauri-apps/tauri-action`. The following GitHub Secrets must be configured:
 
 | Secret | Description |
 |--------|-------------|

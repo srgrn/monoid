@@ -85,4 +85,24 @@ GitHub Actions is configured to:
 - run JavaScript and Rust tests on every pull request
 - create a tagged release from the current version when the release workflow is triggered manually
 - build release bundles for Linux, Windows, and macOS
+- sign and notarize the macOS build via Apple's notarization service
 - publish a GitHub release and attach the generated artifacts
+
+### macOS Code Signing & Notarization
+
+The macOS build is automatically signed and notarized using `tauri-apps/tauri-action`. The following GitHub Secrets must be configured in the repository:
+
+| Secret | Description |
+|--------|-------------|
+| `APPLE_CERTIFICATE` | Base64-encoded `.p12` Developer ID Application certificate |
+| `APPLE_CERTIFICATE_PASSWORD` | Password for the `.p12` certificate |
+| `APPLE_SIGNING_IDENTITY` | e.g. `"Developer ID Application: Name (TEAMID)"` |
+| `APPLE_API_ISSUER` | App Store Connect API issuer ID |
+| `APPLE_API_KEY` | App Store Connect API key ID |
+| `APPLE_API_KEY_PATH` | Base64-encoded `.p8` private key from App Store Connect |
+
+To base64-encode a file for use as a secret:
+
+```bash
+base64 -i <file> | pbcopy
+```

@@ -8,6 +8,7 @@ const LogicalSize = window.__TAURI__.dpi?.LogicalSize;
 
 let queue = [];
 let running = false;
+let animTimer = null;
 let outputDirInput;
 let filenameTemplateInput;
 let overwritePolicyInput;
@@ -81,6 +82,7 @@ function setStatus(message, tone = "neutral") {
 
 function setRunningState(nextRunning) {
   running = nextRunning;
+  document.body.dataset.running = nextRunning;
   const hasFiles = queue.length > 0;
 
   byId("add-files").disabled = nextRunning;
@@ -135,8 +137,9 @@ function updateQueueVisibility() {
   byId("queue-container").hidden = !hasFiles;
 }
 
-function renderQueue() {
+function renderQueue(animate = false) {
   const queueEl = byId("queue-list");
+  const queueContainer = byId("queue-container");
   const summary = summarizeQueue(queue);
 
   updateQueueVisibility();
@@ -145,12 +148,12 @@ function renderQueue() {
     queueEl.innerHTML = "";
   } else {
     queueEl.innerHTML = queue
-      .map((entry) => {
+      .map((entry, index) => {
         const filename = entry.path.split(/[\\\\/]/).pop();
         const dir = entry.path.slice(0, entry.path.length - filename.length - 1);
         const meta = entry.message || entry.outputPath || entry.status;
         return `
-          <li class="queue-item" data-status="${entry.status}">
+          <li class="queue-item" data-status="${entry.status}" style="--delay:${index * 25}ms">
             <span class="queue-item-indicator"></span>
             <div class="queue-item-body">
               <div class="queue-item-name">${filename}</div>
@@ -160,6 +163,14 @@ function renderQueue() {
           </li>`;
       })
       .join("");
+  }
+
+  if (animate && queue.length > 0) {
+    queueContainer.dataset.animate = '';
+    clearTimeout(animTimer);
+    animTimer = setTimeout(() => {
+      delete queueContainer.dataset.animate;
+    }, Math.min(queue.length * 25 + 600, 2000));
   }
 
   byId("queue-caption").textContent = `${summary.total} file${summary.total !== 1 ? "s" : ""}`;
@@ -178,7 +189,7 @@ function resetQueueStatuses() {
 
 function upsertQueuePaths(paths) {
   queue = mergeQueue(queue, paths);
-  renderQueue();
+  renderQueue(true);
 }
 
 function updateQueueItem(payload) {

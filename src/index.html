@@ -4,18 +4,25 @@
     <meta charset="UTF-8" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300..700;1,9..40,300..700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+    <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500&family=Sora:wght@300;400;500;600;700&family=Unbounded:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
     <link rel="stylesheet" href="styles.css" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Monoid</title>
     <script type="module" src="/main.js" defer></script>
   </head>
   <body>
+    <!-- Atmospheric background -->
+    <div class="atmosphere" aria-hidden="true">
+      <div class="orb orb--cyan"></div>
+      <div class="orb orb--violet"></div>
+      <div class="orb orb--rose"></div>
+    </div>
+
     <main class="shell">
       <!-- Top bar: branding + global actions -->
       <header class="topbar">
         <div class="brand">
-          <svg class="brand-icon" width="20" height="20" viewBox="0 0 20 20" fill="none">
+          <svg class="brand-icon" width="22" height="22" viewBox="0 0 20 20" fill="none">
             <rect x="2" y="6" width="3" height="8" rx="1.5" fill="currentColor" opacity="0.5"/>
             <rect x="7" y="3" width="3" height="14" rx="1.5" fill="currentColor"/>
             <rect x="12" y="5" width="3" height="10" rx="1.5" fill="currentColor" opacity="0.7"/>
@@ -42,30 +49,32 @@
 
       <!-- Collapsible settings panel -->
       <section class="settings-panel" id="settings-panel" hidden>
-        <div class="settings-grid">
-          <label class="field">
-            <span class="field-label">Output Folder</span>
-            <div class="field-inline">
-              <input type="text" id="output-dir" placeholder="Same as source" />
-              <button type="button" id="select-output-dir" class="btn btn-secondary btn-sm">Browse</button>
-            </div>
-          </label>
-          <label class="field">
-            <span class="field-label">Filename Template</span>
-            <input type="text" id="filename-template" value="{stem}_mono" />
-            <small class="field-hint">Use <code>{stem}</code>, <code>{original_ext}</code>, <code>{ext}</code></small>
-          </label>
-          <label class="field">
-            <span class="field-label">Overwrite Policy</span>
-            <select id="overwrite-policy">
-              <option value="forbid" selected>Fail if output exists</option>
-              <option value="overwrite">Overwrite existing</option>
-            </select>
-          </label>
-        </div>
-        <div class="settings-toggles">
-          <label class="toggle"><input type="checkbox" id="skip-existing" checked /><span>Skip existing outputs</span></label>
-          <label class="toggle"><input type="checkbox" id="stop-on-error" /><span>Stop on first error</span></label>
+        <div class="settings-inner">
+          <div class="settings-grid">
+            <label class="field">
+              <span class="field-label">Output Folder</span>
+              <div class="field-inline">
+                <input type="text" id="output-dir" placeholder="Same as source" />
+                <button type="button" id="select-output-dir" class="btn btn-secondary btn-sm">Browse</button>
+              </div>
+            </label>
+            <label class="field">
+              <span class="field-label">Filename Template</span>
+              <input type="text" id="filename-template" value="{stem}_mono" />
+              <small class="field-hint">Use <code>{stem}</code>, <code>{original_ext}</code>, <code>{ext}</code></small>
+            </label>
+            <label class="field">
+              <span class="field-label">Overwrite Policy</span>
+              <select id="overwrite-policy">
+                <option value="forbid" selected>Fail if output exists</option>
+                <option value="overwrite">Overwrite existing</option>
+              </select>
+            </label>
+          </div>
+          <div class="settings-toggles">
+            <label class="toggle"><input type="checkbox" id="skip-existing" checked /><span>Skip existing outputs</span></label>
+            <label class="toggle"><input type="checkbox" id="stop-on-error" /><span>Stop on first error</span></label>
+          </div>
         </div>
       </section>
 
@@ -74,9 +83,32 @@
         <!-- Drop zone / empty state (shown when queue is empty) -->
         <div class="dropzone" id="dropzone">
           <div class="dropzone-inner">
-            <svg class="dropzone-icon" width="48" height="48" viewBox="0 0 48 48" fill="none">
-              <path d="M24 8v24M16 24l8 8 8-8" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" opacity="0.5"/>
-              <path d="M8 32v6a2 2 0 002 2h28a2 2 0 002-2v-6" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" opacity="0.3"/>
+            <div class="dropzone-rings" aria-hidden="true">
+              <span class="ring"></span>
+              <span class="ring"></span>
+              <span class="ring"></span>
+            </div>
+            <svg class="waveform" viewBox="0 0 240 60" fill="none" aria-hidden="true">
+              <rect class="wave-bar" x="2" y="25" width="6" height="10" rx="3" style="animation-delay:0s"/>
+              <rect class="wave-bar" x="14" y="22" width="6" height="16" rx="3" style="animation-delay:.12s"/>
+              <rect class="wave-bar" x="26" y="24" width="6" height="12" rx="3" style="animation-delay:.24s"/>
+              <rect class="wave-bar" x="38" y="18" width="6" height="24" rx="3" style="animation-delay:.36s"/>
+              <rect class="wave-bar" x="50" y="21" width="6" height="18" rx="3" style="animation-delay:.48s"/>
+              <rect class="wave-bar" x="62" y="14" width="6" height="32" rx="3" style="animation-delay:.6s"/>
+              <rect class="wave-bar" x="74" y="17" width="6" height="26" rx="3" style="animation-delay:.72s"/>
+              <rect class="wave-bar" x="86" y="9" width="6" height="42" rx="3" style="animation-delay:.84s"/>
+              <rect class="wave-bar" x="98" y="13" width="6" height="34" rx="3" style="animation-delay:.96s"/>
+              <rect class="wave-bar" x="110" y="5" width="6" height="50" rx="3" style="animation-delay:1.08s"/>
+              <rect class="wave-bar" x="122" y="5" width="6" height="50" rx="3" style="animation-delay:1.2s"/>
+              <rect class="wave-bar" x="134" y="13" width="6" height="34" rx="3" style="animation-delay:1.32s"/>
+              <rect class="wave-bar" x="146" y="9" width="6" height="42" rx="3" style="animation-delay:1.44s"/>
+              <rect class="wave-bar" x="158" y="17" width="6" height="26" rx="3" style="animation-delay:1.56s"/>
+              <rect class="wave-bar" x="170" y="14" width="6" height="32" rx="3" style="animation-delay:1.68s"/>
+              <rect class="wave-bar" x="182" y="21" width="6" height="18" rx="3" style="animation-delay:1.8s"/>
+              <rect class="wave-bar" x="194" y="18" width="6" height="24" rx="3" style="animation-delay:1.92s"/>
+              <rect class="wave-bar" x="206" y="24" width="6" height="12" rx="3" style="animation-delay:2.04s"/>
+              <rect class="wave-bar" x="218" y="22" width="6" height="16" rx="3" style="animation-delay:2.16s"/>
+              <rect class="wave-bar" x="230" y="25" width="6" height="10" rx="3" style="animation-delay:2.28s"/>
             </svg>
             <p class="dropzone-text">Drop audio files here</p>
             <p class="dropzone-hint">or use the buttons above to browse</p>

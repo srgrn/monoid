@@ -5,11 +5,16 @@
 #   APPLE_API_ISSUER             — App Store Connect API issuer ID
 #   APPLE_API_KEY                — App Store Connect API key ID
 #   APPLE_API_KEY_PATH           — Base64-encoded .p8 key file content
+#
+# Required GitHub Secrets for auto-updater signing:
+#   TAURI_SIGNING_PRIVATE_KEY          — Minisign private key (from `tauri signer generate`)
+#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD — Password for the private key
 
 name: Release
 
 on:
-  workflow_dispatch:
+  release:
+    types: [published]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -19,61 +24,15 @@ permissions:
   contents: write
 
 jobs:
-  prepare:
-    name: Create release tag
+  test:
+    name: Test release
     runs-on: ubuntu-latest
-    outputs:
-      tag: ${{ steps.version.outputs.tag }}
-      version: ${{ steps.version.outputs.version }}
-      sha: ${{ github.sha }}
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-
-      - name: Read app version
-        id: version
-        run: |
-          VERSION=$(node -p "require('./package.json').version")
-          TAG="v${VERSION}"
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
-
-      - name: Fail if GitHub release already exists
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          if gh release view "${{ steps.version.outputs.tag }}" --repo "${{ github.repository }}" >/dev/null 2>&1; then
-            echo "Release ${{ steps.version.outputs.tag }} already exists." >&2
-            exit 1
-          fi
-
-      - name: Create or update tag
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git push --delete origin "${{ steps.version.outputs.tag }}" >/dev/null 2>&1 || true
-          git tag -d "${{ steps.version.outputs.tag }}" >/dev/null 2>&1 || true
-          git tag -a "${{ steps.version.outputs.tag }}" -m "Release ${{ steps.version.outputs.tag }}" "${GITHUB_SHA}"
-          git push --force origin "${{ steps.version.outputs.tag }}"
-
-  test:
-    name: Test release on Linux
-    needs: prepare
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Check out tagged release
-        uses: actions/checkout@v4
-        with:
-          ref: refs/tags/${{ needs.prepare.outputs.tag }}
+          ref: ${{ github.event.release.tag_name }}
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -104,9 +63,7 @@ jobs:
 
   build-linux-cross:
     name: Build on Linux (${{ matrix.name }})
-    needs:
-      - prepare
-      - test
+    needs: test
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -128,7 +85,7 @@ jobs:
       - name: Check out tagged release
         uses: actions/checkout@v4
         with:
-          ref: refs/tags/${{ needs.prepare.outputs.tag }}
+          ref: ${{ github.event.release.tag_name }}
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -161,6 +118,8 @@ jobs:
           AR_x86_64_pc_windows_gnu: x86_64-w64-mingw32-gcc-ar
           CC_x86_64_pc_windows_gnu: x86_64-w64-mingw32-gcc
           CXX_x86_64_pc_windows_gnu: x86_64-w64-mingw32-g++
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npm exec tauri build -- ${{ matrix.tauri_args }}
 
       - name: Upload release artifacts
@@ -172,16 +131,14 @@ jobs:
 
   build-macos:
     name: Build on macOS (signed + notarized)
-    needs:
-      - prepare
-      - test
+    needs: test
     runs-on: macos-latest
 
     steps:
       - name: Check out tagged release
         uses: actions/checkout@v4
         with:
-          ref: refs/tags/${{ needs.prepare.outputs.tag }}
+          ref: ${{ github.event.release.tag_name }}
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -212,20 +169,28 @@ jobs:
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
           APPLE_API_KEY_PATH: /tmp/AuthKey.p8
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
-      - name: Upload macOS artifacts
+      - name: Upload macOS DMG
         uses: actions/upload-artifact@v4
         with:
-          name: monoid-macos
+          name: monoid-macos-dmg
+          if-no-files-found: error
+          path: src-tauri/target/release/bundle/**/*.dmg
+
+      - name: Upload macOS updater artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: monoid-macos-updater
           if-no-files-found: error
           path: |
-            src-tauri/target/release/bundle/**/*.dmg
             src-tauri/target/release/bundle/**/*.app.tar.gz
+            src-tauri/target/release/bundle/**/*.app.tar.gz.sig
 
   publish:
-    name: Publish GitHub release
+    name: Attach artifacts to release
     needs:
-      - prepare
       - test
       - build-linux-cross
       - build-macos
@@ -241,11 +206,36 @@ jobs:
       - name: List release files
         run: find release-artifacts -type f | sort
 
-      - name: Create GitHub release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ needs.prepare.outputs.tag }}
-          name: Monoid ${{ needs.prepare.outputs.version }}
-          generate_release_notes: true
-          fail_on_unmatched_files: true
-          files: release-artifacts/**/*
+      - name: Generate latest.json for auto-updater
+        run: |
+          TAG="${{ github.event.release.tag_name }}"
+          VERSION="${TAG#v}"
+          SIG_FILE=$(find release-artifacts -name '*.app.tar.gz.sig' | head -1)
+          TAR_FILE=$(find release-artifacts -name '*.app.tar.gz' ! -name '*.sig' | head -1)
+          if [ -n "$SIG_FILE" ] && [ -n "$TAR_FILE" ]; then
+            SIGNATURE=$(cat "$SIG_FILE")
+            TAR_NAME=$(basename "$TAR_FILE")
+            cat > release-artifacts/latest.json << EOF
+          {
+            "version": "${VERSION}",
+            "platforms": {
+              "darwin-aarch64": {
+                "signature": "${SIGNATURE}",
+                "url": "https://github.com/${{ github.repository }}/releases/download/${TAG}/${TAR_NAME}"
+              },
+              "darwin-x86_64": {
+                "signature": "${SIGNATURE}",
+                "url": "https://github.com/${{ github.repository }}/releases/download/${TAG}/${TAR_NAME}"
+              }
+            }
+          }
+          EOF
+            echo "Generated latest.json for version ${VERSION}"
+          else
+            echo "Warning: Could not find updater artifacts, skipping latest.json"
+          fi
+
+      - name: Upload assets to GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ github.event.release.tag_name }}" release-artifacts/**/* --repo "${{ github.repository }}" --clobber

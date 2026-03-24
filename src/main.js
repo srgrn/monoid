@@ -1,4 +1,5 @@
 import { mergeQueue, summarizeQueue } from "./queue.js";
+import { setupUpdater } from "./updater.js";
 
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
@@ -339,6 +340,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   setupDragAndDrop();
   setupSettingsToggle();
   await autofitWindowToContent();
+  setupUpdater();
 
   await Promise.all([
     listen("batch-item", (event) => {

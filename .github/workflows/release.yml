@@ -1,3 +1,11 @@
+# Required GitHub Secrets for macOS code signing & notarization:
+#   APPLE_CERTIFICATE            — Base64-encoded .p12 certificate
+#   APPLE_CERTIFICATE_PASSWORD   — Password for the .p12 certificate
+#   APPLE_SIGNING_IDENTITY       — e.g. "Developer ID Application: Name (TEAMID)"
+#   APPLE_API_ISSUER             — App Store Connect API issuer ID
+#   APPLE_API_KEY                — App Store Connect API key ID
+#   APPLE_API_KEY_PATH           — Base64-encoded .p8 key file content
+
 name: Release
 
 on:
@@ -159,7 +167,7 @@ jobs:
           path: ${{ matrix.artifact_path }}
 
   build-macos:
-    name: Build on macOS
+    name: Build on macOS (signed + notarized)
     needs:
       - prepare
       - test
@@ -180,11 +188,26 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
       - name: Install npm dependencies
         run: npm ci
 
-      - name: Build macOS bundles
-        run: npm exec tauri build
+      - name: Write App Store Connect API key
+        run: echo "${{ secrets.APPLE_API_KEY_PATH }}" | base64 --decode > /tmp/AuthKey.p8
+
+      - name: Build, sign, and notarize macOS bundles
+        uses: tauri-apps/tauri-action@v0
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_PATH: /tmp/AuthKey.p8
 
       - name: Upload macOS artifacts
         uses: actions/upload-artifact@v4
